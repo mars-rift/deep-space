@@ -7,18 +7,29 @@ using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System;
+using CryptoPredictor; // Remove the incorrect using statement
+
 
 namespace CryptoPredictor
 {
     public class Program
     {
         private const string CSV_FILE_PATH = "crypto.csv";
+        private const string TIMESERIES_CSV_PATH = "crypto_timeseries.csv"; // For time series data
+        private const string OUTPUT_DIR = "output";
 
         public static void Main(string[] args)
         {
             try
             {
-                // Load and prepare data
+                // Create output directory if it doesn't exist
+                if (!Directory.Exists(OUTPUT_DIR))
+                    Directory.CreateDirectory(OUTPUT_DIR);
+
+                Console.WriteLine("=== Crypto Price Predictor ===");
+
+                // Load and prepare regular data
+                Console.WriteLine("Loading basic price data...");
                 var cryptoData = LoadData();
                 if (cryptoData?.Any() != true)
                 {
@@ -26,8 +37,43 @@ namespace CryptoPredictor
                     return;
                 }
 
+                // Load time series data if available
+                Console.WriteLine("Loading time series data...");
+                var timeSeriesData = LoadTimeSeriesData();
+                if (timeSeriesData?.Any() == true)
+                {
+                    Console.WriteLine($"Loaded {timeSeriesData.Count} time series records");
+
+                    // Preprocess time series data
+                    Console.WriteLine("Enriching time series data with technical indicators...");
+                    var enrichedData = DataPreprocessor.EnrichTimeSeriesData(timeSeriesData);
+                    Console.WriteLine($"Enrichment complete: {enrichedData.Count} records processed");
+
+                    // Create visualizations for the first symbol in the dataset
+                    if (enrichedData.Any())
+                    {
+                        var firstSymbol = enrichedData.First().Symbol;
+                        Console.WriteLine($"Creating time series visualization for {firstSymbol}...");
+                        CreateTimeSeriesVisualization(enrichedData, firstSymbol);
+                    }
+                }
+
                 // Train the model
+                Console.WriteLine("Training the price prediction model...");
                 var model = TrainModel(cryptoData);
+
+                // Generate residuals for visualization
+                var residuals = GenerateResiduals(model, cryptoData);
+
+                // Create visualization for prediction vs actual
+                if (residuals.Any())
+                {
+                    Console.WriteLine("Creating prediction vs actual visualization...");
+                    Visualization.CreatePredictionVsActualChart(
+                        residuals,
+                        Path.Combine(OUTPUT_DIR, "prediction_vs_actual.png")
+                    );
+                }
 
                 // Use the model for predictions (example)
                 var prediction = Predict(model, new CryptoData { Symbol = "BTC", Price = 50000 });
@@ -36,6 +82,10 @@ namespace CryptoPredictor
             catch (Exception ex)
             {
                 Console.WriteLine($"An unexpected error occurred: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                }
             }
         }
 
@@ -262,6 +312,116 @@ namespace CryptoPredictor
             var predictionEngine = context.Model.CreatePredictionEngine<CryptoData, CryptoPrediction>(model);
             return predictionEngine.Predict(input);
         }
+        private static List<CryptoTimeSeriesData> LoadTimeSeriesData()
+        {
+            if (!File.Exists(TIMESERIES_CSV_PATH))
+            {
+                Console.WriteLine($"Time series data file not found at path: {TIMESERIES_CSV_PATH}");
+                return new List<CryptoTimeSeriesData>();
+            }
+
+            try
+            {
+                var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+                {
+                    HasHeaderRecord = true,
+                    TrimOptions = TrimOptions.Trim,
+                    MissingFieldFound = null,
+                    PrepareHeaderForMatch = args => args.Header.ToLower(),
+                    DetectDelimiter = true
+                };
+
+                using var reader = new StreamReader(TIMESERIES_CSV_PATH);
+                using var csv = new CsvReader(reader, config);
+
+                // Register class mapping for time series data
+                csv.Context.RegisterClassMap<CryptoTimeSeriesDataMap>();
+
+                return csv.GetRecords<CryptoTimeSeriesData>().ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading time series data: {ex.Message}");
+                return new List<CryptoTimeSeriesData>();
+            }
+        }
+
+        private static void CreateTimeSeriesVisualization(List<CryptoTimeSeriesData> data, string symbol)
+        {
+            try
+            {
+                var filteredData = data.Where(d => d.Symbol == symbol).OrderBy(d => d.Timestamp).ToList();
+
+                if (!filteredData.Any())
+                {
+                    Console.WriteLine($"No time series data found for {symbol}");
+                    return;
+                }
+
+                // Create price chart with moving averages
+                string outputPath = Path.Combine(OUTPUT_DIR, $"{symbol}_price_chart.png");
+                Visualization.CreatePriceChart(filteredData.Select(d => new CryptoData
+                {
+                    Symbol = d.Symbol,
+                    Price = d.ClosePrice
+                }).ToList(), symbol, outputPath);
+
+                Console.WriteLine($"Time series chart saved to: {Path.GetFullPath(outputPath)}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error creating time series visualization: {ex.Message}");
+            }
+        }
+
+        private static List<ResidualData> GenerateResiduals(ITransformer model, List<CryptoData> data)
+        {
+            var context = new MLContext();
+            var residuals = new List<ResidualData>();
+
+            try
+            {
+                var dataView = context.Data.LoadFromEnumerable(data);
+                var predictions = model.Transform(dataView);
+
+                // Extract predictions
+                var predictionColumn = predictions.Schema["Score"];
+                var labelColumn = predictions.Schema["Price"];
+
+                // Create a prediction cursor
+                var cursor = predictions.GetRowCursor(new DataViewSchema.Column[] {
+                    predictionColumn,
+                    labelColumn
+                });
+
+                var labelGetter = cursor.GetGetter<float>(labelColumn);
+                var predictionGetter = cursor.GetGetter<float>(predictionColumn);
+
+                // Process each row
+                while (cursor.MoveNext())
+                {
+                    float label = 0;
+                    float prediction = 0;
+
+                    labelGetter(ref label);
+                    predictionGetter(ref prediction);
+
+                    residuals.Add(new ResidualData
+                    {
+                        Price = label,
+                        PredictedPrice = prediction
+                    });
+                }
+
+                Console.WriteLine($"Generated {residuals.Count} residual data points for visualization");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error generating residuals: {ex.Message}");
+            }
+
+            return residuals;
+        }
     }
 
     public class CryptoData
@@ -293,3 +453,26 @@ namespace CryptoPredictor
         public float Residual => Price - PredictedPrice;
     }
 }
+// Add this at the end of your namespace, after the existing classes
+
+public class CryptoTimeSeriesDataMap : ClassMap<CryptoTimeSeriesData>
+{
+    public CryptoTimeSeriesDataMap()
+    {
+        Map(m => m.Symbol).Name("symbol");
+        Map(m => m.Timestamp).Name("timestamp")
+            .TypeConverterOption.Format("yyyy-MM-dd HH:mm:ss");
+        Map(m => m.OpenPrice).Name("open")
+            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        Map(m => m.HighPrice).Name("high")
+            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        Map(m => m.LowPrice).Name("low")
+            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        Map(m => m.ClosePrice).Name("close")
+            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        Map(m => m.Volume).Name("volume")
+            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+    }
+}
+
+// Remove the extra closing brace at the end of the file
