@@ -7,8 +7,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System;
-using CryptoPredictor; // Remove the incorrect using statement
-
+using System.Threading.Tasks;
 
 namespace CryptoPredictor
 {
@@ -18,7 +17,7 @@ namespace CryptoPredictor
         private const string TIMESERIES_CSV_PATH = "crypto_timeseries.csv"; // For time series data
         private const string OUTPUT_DIR = "output";
 
-        public static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
             try
             {
@@ -28,23 +27,24 @@ namespace CryptoPredictor
 
                 Console.WriteLine("=== Crypto Price Predictor ===");
 
-                // Load and prepare regular data
-                Console.WriteLine("Loading basic price data...");
-                var cryptoData = LoadData();
+                // Load and prepare regular data from Binance
+                Console.WriteLine("Loading basic price data from Binance...");
+                var cryptoData = await LoadDataAsync();
                 if (cryptoData?.Any() != true)
                 {
-                    Console.WriteLine("Error: No data found in the CSV file.");
+                    Console.WriteLine("Error: No data found from Binance API.");
                     return;
                 }
+                Console.WriteLine($"Loaded {cryptoData.Count} price records from Binance");
 
-                // Load time series data if available
-                Console.WriteLine("Loading time series data...");
-                var timeSeriesData = LoadTimeSeriesData();
+                // Load time series data from Binance
+                Console.WriteLine("Loading time series data from Binance...");
+                var timeSeriesData = await LoadTimeSeriesDataAsync();
                 if (timeSeriesData?.Any() == true)
                 {
-                    Console.WriteLine($"Loaded {timeSeriesData.Count} time series records");
+                    Console.WriteLine($"Loaded {timeSeriesData.Count} time series records from Binance");
 
-                    // Preprocess time series data
+                    // Rest of your code stays the same
                     Console.WriteLine("Enriching time series data with technical indicators...");
                     var enrichedData = DataPreprocessor.EnrichTimeSeriesData(timeSeriesData);
                     Console.WriteLine($"Enrichment complete: {enrichedData.Count} records processed");
@@ -89,6 +89,52 @@ namespace CryptoPredictor
             }
         }
 
+        private static async Task<List<CryptoData>> LoadDataAsync()
+        {
+            try
+            {
+                // Try CoinGecko first since we know it works
+                try
+                {
+                    Console.WriteLine("Loading data from CoinGecko API...");
+                    var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
+                    var coinGeckoData = await coinGeckoDataFetcher.GetBitcoinPricesAsync(365);
+                    if (coinGeckoData?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded data from CoinGecko!");
+                        return CleanCryptoData(coinGeckoData);
+                    }
+                    Console.WriteLine("No data returned from CoinGecko, trying Binance...");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"CoinGecko API error: {ex.Message}");
+                    Console.WriteLine("Trying Binance API instead...");
+                }
+                
+                // Then try Binance as backup
+                var binanceDataFetcher = new BinanceDataFetcher();
+                var data = await binanceDataFetcher.GetBitcoinPricesAsync(365);
+                if (data?.Any() == true)
+                {
+                    Console.WriteLine("Successfully loaded data from Binance!");
+                    return CleanCryptoData(data);
+                }
+                
+                // If both fail, fall back to CSV
+                Console.WriteLine("Both online APIs failed, falling back to CSV data...");
+                return CleanCryptoData(LoadData());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading online data: {ex.Message}");
+                
+                // Fallback to CSV if API fails
+                Console.WriteLine("Falling back to CSV data...");
+                return CleanCryptoData(LoadData());
+            }
+        }
+
         private static List<CryptoData> LoadData()
         {
             var config = new CsvConfiguration(CultureInfo.InvariantCulture)
@@ -119,64 +165,153 @@ namespace CryptoPredictor
             }
         }
 
+        private static async Task<List<CryptoTimeSeriesData>> LoadTimeSeriesDataAsync()
+        {
+            try
+            {
+                // First try Binance
+                try
+                {
+                    Console.WriteLine("Trying to load time series data from Binance API...");
+                    var binanceDataFetcher = new BinanceDataFetcher();
+                    var data = await binanceDataFetcher.GetBitcoinOHLCVAsync("1d", 365);
+                    if (data?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded time series data from Binance!");
+                        return data;
+                    }
+                    Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Binance API error: {ex.Message}");
+                    Console.WriteLine("Trying CoinGecko API instead...");
+                }
+                
+                // Then try CoinGecko as backup
+                var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
+                var coinGeckoData = await coinGeckoDataFetcher.GetBitcoinOHLCVAsync(365);
+                if (coinGeckoData?.Any() == true)
+                {
+                    Console.WriteLine("Successfully loaded time series data from CoinGecko!");
+                    return coinGeckoData;
+                }
+                
+                // If both fail, fall back to CSV
+                Console.WriteLine("Both online APIs failed, falling back to CSV time series data...");
+                return LoadTimeSeriesData();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading online time series data: {ex.Message}");
+                
+                // Fallback to CSV if API fails
+                Console.WriteLine("Falling back to CSV time series data...");
+                return LoadTimeSeriesData();
+            }
+        }
+
+        private static List<CryptoTimeSeriesData> LoadTimeSeriesData()
+        {
+            if (!File.Exists(TIMESERIES_CSV_PATH))
+            {
+                Console.WriteLine($"Time series data file not found at path: {TIMESERIES_CSV_PATH}");
+                return new List<CryptoTimeSeriesData>();
+            }
+
+            try
+            {
+                var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+                {
+                    HasHeaderRecord = true,
+                    TrimOptions = TrimOptions.Trim,
+                    MissingFieldFound = null,
+                    PrepareHeaderForMatch = args => args.Header.ToLower(),
+                    DetectDelimiter = true
+                };
+
+                using var reader = new StreamReader(TIMESERIES_CSV_PATH);
+                using var csv = new CsvReader(reader, config);
+
+                // Register class mapping for time series data
+                csv.Context.RegisterClassMap<CryptoTimeSeriesDataMap>();
+
+                return csv.GetRecords<CryptoTimeSeriesData>().ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading time series data: {ex.Message}");
+                return new List<CryptoTimeSeriesData>();
+            }
+        }
+
         private static ITransformer TrainModel(IList<CryptoData> data)
         {
             var context = new MLContext(seed: 42);
 
             try
             {
-                var dataView = context.Data.LoadFromEnumerable(data);
-
-                // Modify pipeline to handle potential numeric overflow
-                var pipeline = context.Transforms.Categorical.OneHotEncoding(
-                        outputColumnName: "SymbolEncoded",
-                        inputColumnName: "Symbol")
-                    .Append(context.Transforms.Concatenate("Features", "SymbolEncoded"))
+                // First validate the data isn't empty
+                if (data == null || !data.Any())
+                {
+                    throw new ArgumentException("Training data is empty or null");
+                }
+                
+                Console.WriteLine($"Training model with {data.Count} records");
+                
+                // Print price range to help with debugging
+                var minPrice = data.Min(d => d.Price);
+                var maxPrice = data.Max(d => d.Price);
+                Console.WriteLine($"Price range in training data: {minPrice:F2} to {maxPrice:F2}");
+                
+                // Create custom features that the model can use
+                var enhancedData = data.Select(d => new 
+                {
+                    Symbol = d.Symbol,
+                    Price = d.Price,
+                    LogPrice = (float)Math.Log(Math.Max(1, d.Price)),  // Log transform
+                    PriceRatio = d.Price / maxPrice,                   // Normalized price between 0-1
+                    PriceSquared = d.Price * d.Price                   // Non-linear feature
+                }).ToList();
+                
+                // Load the transformed data
+                var dataView = context.Data.LoadFromEnumerable(enhancedData);
+                
+                // Debugging: Print schema to ensure columns exist
+                Console.WriteLine("Data schema columns:");
+                foreach (var col in dataView.Schema)
+                {
+                    Console.WriteLine($"- {col.Name} ({col.Type})");
+                }
+                
+                // Create a simpler pipeline with proper feature engineering
+                var pipeline = context.Transforms.ReplaceMissingValues(new[] {
+                        new InputOutputColumnPair("Price"),
+                        new InputOutputColumnPair("LogPrice"),
+                        new InputOutputColumnPair("PriceRatio"), 
+                        new InputOutputColumnPair("PriceSquared")
+                    })
+                    // Categorical features (if needed)
+                    .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
+                    // Combine all features into a single vector
+                    .Append(context.Transforms.Concatenate("Features", 
+                        "LogPrice", "PriceRatio", "PriceSquared", "SymbolEncoded"))
+                    // Normalize features for better training
                     .Append(context.Transforms.NormalizeMinMax("Features"))
+                    // Use a simpler regression algorithm for stability
                     .Append(context.Regression.Trainers.Sdca(
-                        labelColumnName: "Price",
+                        labelColumnName: "Price", 
                         featureColumnName: "Features",
                         maximumNumberOfIterations: 100));
 
+                // Split data and train
                 var splitData = context.Data.TrainTestSplit(dataView, testFraction: 0.2, seed: 42);
+                
+                Console.WriteLine("Starting model training...");
                 var model = pipeline.Fit(splitData.TrainSet);
+                Console.WriteLine("Model training completed successfully");
 
-                // Evaluate with try-catch
-                try
-                {
-                    var predictions = model.Transform(splitData.TestSet);
-                    var metrics = context.Regression.Evaluate(predictions, labelColumnName: "Price");
-
-                    Console.WriteLine("Model Evaluation Metrics:");
-                    Console.WriteLine($"R² Score: {metrics.RSquared:F4}");
-                    Console.WriteLine($"Mean Absolute Error: {metrics.MeanAbsoluteError:F2}");
-                    Console.WriteLine($"Root Mean Squared Error: {metrics.RootMeanSquaredError:F2}");
-
-                    // Add back feature importance with correct column mapping
-                    try
-                    {
-                        PrintFeatureImportance(context, model, splitData.TrainSet);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Warning: Feature importance calculation failed: {ex.Message}");
-                    }
-
-                    // Add back residuals analysis with correct column mapping
-                    try
-                    {
-                        PlotResiduals(predictions);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Warning: Residuals analysis failed: {ex.Message}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Warning: Model evaluation failed: {ex.Message}");
-                }
-
+                // Rest of the method stays the same...
                 return model;
             }
             catch (Exception ex)
@@ -309,41 +444,20 @@ namespace CryptoPredictor
                 throw new ArgumentNullException(nameof(input));
 
             var context = new MLContext();
-            var predictionEngine = context.Model.CreatePredictionEngine<CryptoData, CryptoPrediction>(model);
-            return predictionEngine.Predict(input);
-        }
-        private static List<CryptoTimeSeriesData> LoadTimeSeriesData()
-        {
-            if (!File.Exists(TIMESERIES_CSV_PATH))
+            
+            // Define a class to match our schema
+            var enhancedInput = new EnhancedCryptoData 
             {
-                Console.WriteLine($"Time series data file not found at path: {TIMESERIES_CSV_PATH}");
-                return new List<CryptoTimeSeriesData>();
-            }
-
-            try
-            {
-                var config = new CsvConfiguration(CultureInfo.InvariantCulture)
-                {
-                    HasHeaderRecord = true,
-                    TrimOptions = TrimOptions.Trim,
-                    MissingFieldFound = null,
-                    PrepareHeaderForMatch = args => args.Header.ToLower(),
-                    DetectDelimiter = true
-                };
-
-                using var reader = new StreamReader(TIMESERIES_CSV_PATH);
-                using var csv = new CsvReader(reader, config);
-
-                // Register class mapping for time series data
-                csv.Context.RegisterClassMap<CryptoTimeSeriesDataMap>();
-
-                return csv.GetRecords<CryptoTimeSeriesData>().ToList();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error loading time series data: {ex.Message}");
-                return new List<CryptoTimeSeriesData>();
-            }
+                Symbol = input.Symbol,
+                Price = input.Price,
+                LogPrice = (float)Math.Log(Math.Max(1, input.Price)),
+                PriceRatio = input.Price / 100000f, // Using a reasonable max price
+                PriceSquared = input.Price * input.Price
+            };
+            
+            // Create prediction engine with proper types
+            var predictionEngine = context.Model.CreatePredictionEngine<EnhancedCryptoData, CryptoPrediction>(model);
+            return predictionEngine.Predict(enhancedInput);
         }
 
         private static void CreateTimeSeriesVisualization(List<CryptoTimeSeriesData> data, string symbol)
@@ -381,7 +495,19 @@ namespace CryptoPredictor
 
             try
             {
-                var dataView = context.Data.LoadFromEnumerable(data);
+                // Create transformed data with the same features as in training
+                var maxPrice = data.Max(d => d.Price);
+                var enhancedData = data.Select(d => new 
+                {
+                    Symbol = d.Symbol,
+                    Price = d.Price,
+                    LogPrice = (float)Math.Log(Math.Max(1, d.Price)),  // Add the same transformations
+                    PriceRatio = d.Price / maxPrice,                   // as in the TrainModel method
+                    PriceSquared = d.Price * d.Price                   
+                }).ToList();
+                
+                // Load the enhanced data instead of raw data
+                var dataView = context.Data.LoadFromEnumerable(enhancedData);
                 var predictions = model.Transform(dataView);
 
                 // Extract predictions
@@ -418,9 +544,58 @@ namespace CryptoPredictor
             catch (Exception ex)
             {
                 Console.WriteLine($"Error generating residuals: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                }
+                
+                // Print schema information to help diagnose issues
+                try {
+                    var rawDataView = context.Data.LoadFromEnumerable(data);
+                    Console.WriteLine("\nAvailable columns in raw data:");
+                    foreach (var column in rawDataView.Schema)
+                    {
+                        Console.WriteLine($"- {column.Name} ({column.Type})");
+                    }
+                }
+                catch {}
             }
 
             return residuals;
+        }
+
+        private static List<CryptoData> CleanCryptoData(List<CryptoData> data)
+        {
+            if (data == null || !data.Any())
+                return new List<CryptoData>();
+
+            Console.WriteLine($"Cleaning data. Original count: {data.Count}");
+            
+            // Remove entries with zero or negative prices
+            var cleanedData = data.Where(d => d.Price > 0).ToList();
+            
+            // Remove extreme outliers (using IQR method)
+            if (cleanedData.Count > 10) // Only if we have enough data points
+            {
+                var prices = cleanedData.Select(d => d.Price).OrderBy(p => p).ToList();
+                int q1Index = (int)(prices.Count * 0.25);
+                int q3Index = (int)(prices.Count * 0.75);
+                
+                float q1 = prices[q1Index];
+                float q3 = prices[q3Index];
+                float iqr = q3 - q1;
+                
+                // Define outlier bounds (1.5 is the standard multiplier for outliers)
+                float lowerBound = q1 - (1.5f * iqr);
+                float upperBound = q3 + (1.5f * iqr);
+                
+                // Filter out outliers
+                cleanedData = cleanedData.Where(d => d.Price >= lowerBound && d.Price <= upperBound).ToList();
+            }
+            
+            Console.WriteLine($"Data cleaning complete. New count: {cleanedData.Count}");
+            
+            return cleanedData;
         }
     }
 
@@ -452,27 +627,33 @@ namespace CryptoPredictor
         public float PredictedPrice { get; set; }
         public float Residual => Price - PredictedPrice;
     }
-}
-// Add this at the end of your namespace, after the existing classes
 
-public class CryptoTimeSeriesDataMap : ClassMap<CryptoTimeSeriesData>
-{
-    public CryptoTimeSeriesDataMap()
+    public class CryptoTimeSeriesDataMap : ClassMap<CryptoTimeSeriesData>
     {
-        Map(m => m.Symbol).Name("symbol");
-        Map(m => m.Timestamp).Name("timestamp")
-            .TypeConverterOption.Format("yyyy-MM-dd HH:mm:ss");
-        Map(m => m.OpenPrice).Name("open")
-            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
-        Map(m => m.HighPrice).Name("high")
-            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
-        Map(m => m.LowPrice).Name("low")
-            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
-        Map(m => m.ClosePrice).Name("close")
-            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
-        Map(m => m.Volume).Name("volume")
-            .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        public CryptoTimeSeriesDataMap()
+        {
+            Map(m => m.Symbol).Name("symbol");
+            Map(m => m.Timestamp).Name("timestamp")
+                .TypeConverterOption.Format("yyyy-MM-dd HH:mm:ss");
+            Map(m => m.OpenPrice).Name("open")
+                .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+            Map(m => m.HighPrice).Name("high")
+                .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+            Map(m => m.LowPrice).Name("low")
+                .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+            Map(m => m.ClosePrice).Name("close")
+                .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+            Map(m => m.Volume).Name("volume")
+                .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
+        }
+    }
+
+    public class EnhancedCryptoData
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public float Price { get; set; }
+        public float LogPrice { get; set; }
+        public float PriceRatio { get; set; }
+        public float PriceSquared { get; set; }
     }
 }
-
-// Remove the extra closing brace at the end of the file

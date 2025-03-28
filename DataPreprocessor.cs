@@ -29,10 +29,18 @@ namespace CryptoPredictor
                 {
                     var currentRecord = symbolData[i];
                     
-                    // Add previous day change
+                    // Calculate price change percentage first
                     if (i > 0)
                     {
+                        float previousClose = symbolData[i-1].ClosePrice;
+                        float currentClose = currentRecord.ClosePrice;
+                        currentRecord.PriceChangePercentage = (currentClose - previousClose) / previousClose * 100;
                         currentRecord.PreviousDayChange = symbolData[i-1].PriceChangePercentage;
+                    }
+                    else
+                    {
+                        currentRecord.PriceChangePercentage = 0;
+                        currentRecord.PreviousDayChange = 0;
                     }
                     
                     // Calculate moving averages
