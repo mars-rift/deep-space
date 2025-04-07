@@ -47,6 +47,10 @@ namespace CryptoPredictor
                     // Rest of your code stays the same
                     Console.WriteLine("Enriching time series data with technical indicators...");
                     var enrichedData = DataPreprocessor.EnrichTimeSeriesData(timeSeriesData);
+
+                    // Train the model using enriched data
+                    var model = TrainModel(enrichedData);
+
                     Console.WriteLine($"Enrichment complete: {enrichedData.Count} records processed");
 
                     // Create visualizations for the first symbol in the dataset
@@ -56,28 +60,44 @@ namespace CryptoPredictor
                         Console.WriteLine($"Creating time series visualization for {firstSymbol}...");
                         CreateTimeSeriesVisualization(enrichedData, firstSymbol);
                     }
+
+                    // Generate residuals for visualization
+                    var residuals = GenerateResiduals(model, enrichedData);
+
+                    // Add timestamp to filename to avoid overwriting
+                    string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    string predictionVsActualPath = Path.Combine(OUTPUT_DIR, $"prediction_vs_actual_{timestamp}.png");
+
+                    // Create visualization for prediction vs actual
+                    if (residuals.Any())
+                    {
+                        Console.WriteLine("Creating prediction vs actual visualization...");
+                        Visualization.CreatePredictionVsActualChart(
+                            residuals,
+                            predictionVsActualPath
+                        );
+
+                        Console.WriteLine($"Prediction vs actual chart saved to: {Path.GetFullPath(predictionVsActualPath)}");
+                    }
+
+                    // Use the model for predictions (example)
+                    var latestIndicators = enrichedData.Last(); // latest enriched data point
+                    var maxPrice = enrichedData.Max(x => x.ClosePrice);
+
+                    var prediction = Predict(model, new EnhancedCryptoData
+                    {
+                        Symbol = "BTC",
+                        Price = latestIndicators.ClosePrice,
+                        LogPrice = (float)Math.Log(Math.Max(1, latestIndicators.ClosePrice)),
+                        PriceRatio = latestIndicators.ClosePrice / maxPrice,
+                        PriceSquared = latestIndicators.ClosePrice * latestIndicators.ClosePrice,
+                        MovingAverage5Day = latestIndicators.MovingAverage5Day.Value,
+                        MovingAverage20Day = latestIndicators.MovingAverage20Day.Value,
+                        RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex.Value
+                    });
+
+                    Console.WriteLine($"Predicted Best Price to Buy BTC: {prediction.PredictedPrice:C2}");
                 }
-
-                // Train the model
-                Console.WriteLine("Training the price prediction model...");
-                var model = TrainModel(cryptoData);
-
-                // Generate residuals for visualization
-                var residuals = GenerateResiduals(model, cryptoData);
-
-                // Create visualization for prediction vs actual
-                if (residuals.Any())
-                {
-                    Console.WriteLine("Creating prediction vs actual visualization...");
-                    Visualization.CreatePredictionVsActualChart(
-                        residuals,
-                        Path.Combine(OUTPUT_DIR, "prediction_vs_actual.png")
-                    );
-                }
-
-                // Use the model for predictions (example)
-                var prediction = Predict(model, new CryptoData { Symbol = "BTC", Price = 50000 });
-                Console.WriteLine($"Predicted Best Price to Buy BTC: {prediction.PredictedPrice:C2}");
             }
             catch (Exception ex)
             {
@@ -245,73 +265,56 @@ namespace CryptoPredictor
             }
         }
 
-        private static ITransformer TrainModel(IList<CryptoData> data)
+        private static ITransformer TrainModel(List<CryptoTimeSeriesData> enrichedData)
         {
             var context = new MLContext(seed: 42);
 
             try
             {
-                // First validate the data isn't empty
-                if (data == null || !data.Any())
-                {
-                    throw new ArgumentException("Training data is empty or null");
-                }
-                
-                Console.WriteLine($"Training model with {data.Count} records");
-                
-                // Print price range to help with debugging
-                var minPrice = data.Min(d => d.Price);
-                var maxPrice = data.Max(d => d.Price);
-                Console.WriteLine($"Price range in training data: {minPrice:F2} to {maxPrice:F2}");
-                
-                // Create custom features that the model can use
-                var enhancedData = data.Select(d => new 
-                {
-                    Symbol = d.Symbol,
-                    Price = d.Price,
-                    LogPrice = (float)Math.Log(Math.Max(1, d.Price)),  // Log transform
-                    PriceRatio = d.Price / maxPrice,                   // Normalized price between 0-1
-                    PriceSquared = d.Price * d.Price                   // Non-linear feature
-                }).ToList();
-                
-                // Load the transformed data
-                var dataView = context.Data.LoadFromEnumerable(enhancedData);
-                
-                // Debugging: Print schema to ensure columns exist
-                Console.WriteLine("Data schema columns:");
-                foreach (var col in dataView.Schema)
-                {
-                    Console.WriteLine($"- {col.Name} ({col.Type})");
-                }
-                
-                // Create a simpler pipeline with proper feature engineering
+                // Validate data
+                var trainingData = enrichedData
+                    .Where(d => d.MovingAverage5Day.HasValue && d.MovingAverage20Day.HasValue && d.RelativeStrengthIndex.HasValue)
+                    .Select(d => new EnhancedCryptoData
+                    {
+                        Symbol = d.Symbol,
+                        Price = d.ClosePrice,
+                        LogPrice = (float)Math.Log(Math.Max(1, d.ClosePrice)),
+                        PriceRatio = d.ClosePrice / enrichedData.Max(x => x.ClosePrice),
+                        PriceSquared = d.ClosePrice * d.ClosePrice,
+                        MovingAverage5Day = d.MovingAverage5Day.Value,
+                        MovingAverage20Day = d.MovingAverage20Day.Value,
+                        RelativeStrengthIndex = d.RelativeStrengthIndex.Value
+                    }).ToList();
+
+                var dataView = context.Data.LoadFromEnumerable(trainingData);
+
+                // Pipeline with technical indicators
                 var pipeline = context.Transforms.ReplaceMissingValues(new[] {
                         new InputOutputColumnPair("Price"),
                         new InputOutputColumnPair("LogPrice"),
-                        new InputOutputColumnPair("PriceRatio"), 
-                        new InputOutputColumnPair("PriceSquared")
+                        new InputOutputColumnPair("PriceRatio"),
+                        new InputOutputColumnPair("PriceSquared"),
+                        new InputOutputColumnPair("MovingAverage5Day"),
+                        new InputOutputColumnPair("MovingAverage20Day"),
+                        new InputOutputColumnPair("RelativeStrengthIndex")
                     })
-                    // Categorical features (if needed)
                     .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
-                    // Combine all features into a single vector
-                    .Append(context.Transforms.Concatenate("Features", 
-                        "LogPrice", "PriceRatio", "PriceSquared", "SymbolEncoded"))
-                    // Normalize features for better training
+                    .Append(context.Transforms.Concatenate("Features",
+                        "LogPrice", "PriceRatio", "PriceSquared",
+                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex",
+                        "SymbolEncoded"))
                     .Append(context.Transforms.NormalizeMinMax("Features"))
-                    // Use a simpler regression algorithm for stability
                     .Append(context.Regression.Trainers.Sdca(
-                        labelColumnName: "Price", 
+                        labelColumnName: "Price",
                         featureColumnName: "Features",
                         maximumNumberOfIterations: 100));
 
-                // Split data and train
                 var splitData = context.Data.TrainTestSplit(dataView, testFraction: 0.2, seed: 42);
-                
+
                 Console.WriteLine("Starting model training...");
                 var model = pipeline.Fit(splitData.TrainSet);
                 Console.WriteLine("Model training completed successfully");
 
-                // Rest of the method stays the same...
                 return model;
             }
             catch (Exception ex)
@@ -436,28 +439,11 @@ namespace CryptoPredictor
             }
         }
 
-        private static CryptoPrediction Predict(ITransformer model, CryptoData input)
+        private static CryptoPrediction Predict(ITransformer model, EnhancedCryptoData input)
         {
-            if (model == null)
-                throw new ArgumentNullException(nameof(model));
-            if (input == null)
-                throw new ArgumentNullException(nameof(input));
-
             var context = new MLContext();
-            
-            // Define a class to match our schema
-            var enhancedInput = new EnhancedCryptoData 
-            {
-                Symbol = input.Symbol,
-                Price = input.Price,
-                LogPrice = (float)Math.Log(Math.Max(1, input.Price)),
-                PriceRatio = input.Price / 100000f, // Using a reasonable max price
-                PriceSquared = input.Price * input.Price
-            };
-            
-            // Create prediction engine with proper types
             var predictionEngine = context.Model.CreatePredictionEngine<EnhancedCryptoData, CryptoPrediction>(model);
-            return predictionEngine.Predict(enhancedInput);
+            return predictionEngine.Predict(input);
         }
 
         private static void CreateTimeSeriesVisualization(List<CryptoTimeSeriesData> data, string symbol)
@@ -472,8 +458,10 @@ namespace CryptoPredictor
                     return;
                 }
 
-                // Create price chart with moving averages
-                string outputPath = Path.Combine(OUTPUT_DIR, $"{symbol}_price_chart.png");
+                // Add timestamp to filename to avoid overwriting
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string outputPath = Path.Combine(OUTPUT_DIR, $"{symbol}_price_chart_{timestamp}.png");
+
                 Visualization.CreatePriceChart(filteredData.Select(d => new CryptoData
                 {
                     Symbol = d.Symbol,
@@ -488,54 +476,60 @@ namespace CryptoPredictor
             }
         }
 
-        private static List<ResidualData> GenerateResiduals(ITransformer model, List<CryptoData> data)
+        private static List<ResidualData> GenerateResiduals(ITransformer model, List<CryptoTimeSeriesData> enrichedData)
         {
             var context = new MLContext();
             var residuals = new List<ResidualData>();
 
             try
             {
-                // Create transformed data with the same features as in training
-                var maxPrice = data.Max(d => d.Price);
-                var enhancedData = data.Select(d => new 
+                // Ensure we have valid technical indicators
+                var validData = enrichedData
+                    .Where(d => d.MovingAverage5Day.HasValue && d.MovingAverage20Day.HasValue && d.RelativeStrengthIndex.HasValue)
+                    .ToList();
+
+                var maxPrice = validData.Max(d => d.ClosePrice);
+
+                // Create enhanced data matching the training schema
+                var enhancedData = validData.Select(d => new EnhancedCryptoData
                 {
                     Symbol = d.Symbol,
-                    Price = d.Price,
-                    LogPrice = (float)Math.Log(Math.Max(1, d.Price)),  // Add the same transformations
-                    PriceRatio = d.Price / maxPrice,                   // as in the TrainModel method
-                    PriceSquared = d.Price * d.Price                   
+                    Price = d.ClosePrice,
+                    LogPrice = (float)Math.Log(Math.Max(1, d.ClosePrice)),
+                    PriceRatio = d.ClosePrice / maxPrice,
+                    PriceSquared = d.ClosePrice * d.ClosePrice,
+                    MovingAverage5Day = d.MovingAverage5Day.Value,
+                    MovingAverage20Day = d.MovingAverage20Day.Value,
+                    RelativeStrengthIndex = d.RelativeStrengthIndex.Value
                 }).ToList();
-                
-                // Load the enhanced data instead of raw data
+
+                // Load enhanced data into IDataView
                 var dataView = context.Data.LoadFromEnumerable(enhancedData);
+
+                // Generate predictions
                 var predictions = model.Transform(dataView);
 
-                // Extract predictions
+                // Extract predictions and actual prices
                 var predictionColumn = predictions.Schema["Score"];
                 var labelColumn = predictions.Schema["Price"];
 
-                // Create a prediction cursor
-                var cursor = predictions.GetRowCursor(new DataViewSchema.Column[] {
-                    predictionColumn,
-                    labelColumn
-                });
+                using var cursor = predictions.GetRowCursor(new[] { predictionColumn, labelColumn });
 
                 var labelGetter = cursor.GetGetter<float>(labelColumn);
                 var predictionGetter = cursor.GetGetter<float>(predictionColumn);
 
-                // Process each row
                 while (cursor.MoveNext())
                 {
-                    float label = 0;
-                    float prediction = 0;
+                    float actual = 0;
+                    float predicted = 0;
 
-                    labelGetter(ref label);
-                    predictionGetter(ref prediction);
+                    labelGetter(ref actual);
+                    predictionGetter(ref predicted);
 
                     residuals.Add(new ResidualData
                     {
-                        Price = label,
-                        PredictedPrice = prediction
+                        Price = actual,
+                        PredictedPrice = predicted
                     });
                 }
 
@@ -548,17 +542,6 @@ namespace CryptoPredictor
                 {
                     Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
                 }
-                
-                // Print schema information to help diagnose issues
-                try {
-                    var rawDataView = context.Data.LoadFromEnumerable(data);
-                    Console.WriteLine("\nAvailable columns in raw data:");
-                    foreach (var column in rawDataView.Schema)
-                    {
-                        Console.WriteLine($"- {column.Name} ({column.Type})");
-                    }
-                }
-                catch {}
             }
 
             return residuals;
@@ -655,5 +638,8 @@ namespace CryptoPredictor
         public float LogPrice { get; set; }
         public float PriceRatio { get; set; }
         public float PriceSquared { get; set; }
+        public float MovingAverage5Day { get; set; }
+        public float MovingAverage20Day { get; set; }
+        public float RelativeStrengthIndex { get; set; }
     }
 }
