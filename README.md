@@ -1,6 +1,6 @@
 # Deep-Space CryptoPredictor
 
-A machine learning-based cryptocurrency prediction tool that utilizes real-time Bitcoin data to generate price insights and visualizations.
+A machine learning-based cryptocurrency prediction tool that utilizes real-time crypto data to generate price insights and visualizations.
 
 ## 🚀 Features
 
