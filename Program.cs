@@ -16,9 +16,16 @@ namespace CryptoPredictor
         private const string CSV_FILE_PATH = "crypto.csv";
         private const string TIMESERIES_CSV_PATH = "crypto_timeseries.csv"; // For time series data
         private const string OUTPUT_DIR = "output";
+        private const string DEFAULT_SYMBOL = "ETH";
+        private const string DEFAULT_COINGECKO_ID = "ethereum";
+        private const string DEFAULT_BINANCE_SYMBOL = "ETHUSDT";
 
         public static async Task Main(string[] args)
         {
+            string symbol = DEFAULT_SYMBOL;
+            string coinGeckoId = DEFAULT_COINGECKO_ID;
+            string binanceSymbol = DEFAULT_BINANCE_SYMBOL;
+
             try
             {
                 // Create output directory if it doesn't exist
@@ -27,9 +34,9 @@ namespace CryptoPredictor
 
                 Console.WriteLine("=== Crypto Price Predictor ===");
 
-                // Load and prepare regular data from Binance
-                Console.WriteLine("Loading basic price data from Binance...");
-                var cryptoData = await LoadDataAsync();
+                // Load and prepare regular data from CoinGecko
+                Console.WriteLine($"Loading basic price data for {symbol} from CoinGecko...");
+                var cryptoData = await LoadDataAsync(coinGeckoId, binanceSymbol);
                 if (cryptoData?.Any() != true)
                 {
                     Console.WriteLine("Error: No data found from Binance API.");
@@ -37,9 +44,9 @@ namespace CryptoPredictor
                 }
                 Console.WriteLine($"Loaded {cryptoData.Count} price records from Binance");
 
-                // Load time series data from Binance
-                Console.WriteLine("Loading time series data from Binance...");
-                var timeSeriesData = await LoadTimeSeriesDataAsync();
+                // Load time series data
+                Console.WriteLine($"Loading time series data for {symbol}...");
+                var timeSeriesData = await LoadTimeSeriesDataAsync(coinGeckoId, binanceSymbol);
                 if (timeSeriesData?.Any() == true)
                 {
                     Console.WriteLine($"Loaded {timeSeriesData.Count} time series records from Binance");
@@ -86,7 +93,7 @@ namespace CryptoPredictor
 
                     var prediction = Predict(model, new EnhancedCryptoData
                     {
-                        Symbol = "BTC",
+                        Symbol = symbol,
                         Price = latestIndicators.ClosePrice,
                         LogPrice = (float)Math.Log(Math.Max(1, latestIndicators.ClosePrice)),
                         PriceRatio = latestIndicators.ClosePrice / maxPrice,
@@ -96,7 +103,7 @@ namespace CryptoPredictor
                         RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex.Value
                     });
 
-                    Console.WriteLine($"Predicted Best Price to Buy BTC: {prediction.PredictedPrice:C2}");
+                    Console.WriteLine($"Predicted Best Price to Buy ETH: {prediction.PredictedPrice:C2}");
                 }
             }
             catch (Exception ex)
@@ -109,38 +116,29 @@ namespace CryptoPredictor
             }
         }
 
-        private static async Task<List<CryptoData>> LoadDataAsync()
+        private static async Task<List<CryptoData>> LoadDataAsync(string coinGeckoId, string binanceSymbol)
         {
             try
             {
-                // Try CoinGecko first since we know it works
-                try
+                // Try CoinGecko first
+                var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
+                var coinGeckoData = await coinGeckoDataFetcher.GetPricesAsync(coinGeckoId, 365);
+                if (coinGeckoData?.Any() == true)
                 {
-                    Console.WriteLine("Loading data from CoinGecko API...");
-                    var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
-                    var coinGeckoData = await coinGeckoDataFetcher.GetBitcoinPricesAsync(365);
-                    if (coinGeckoData?.Any() == true)
-                    {
-                        Console.WriteLine("Successfully loaded data from CoinGecko!");
-                        return CleanCryptoData(coinGeckoData);
-                    }
-                    Console.WriteLine("No data returned from CoinGecko, trying Binance...");
+                    Console.WriteLine("Successfully loaded data from CoinGecko!");
+                    return CleanCryptoData(coinGeckoData);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"CoinGecko API error: {ex.Message}");
-                    Console.WriteLine("Trying Binance API instead...");
-                }
-                
+                Console.WriteLine("No data returned from CoinGecko, trying Binance...");
+
                 // Then try Binance as backup
                 var binanceDataFetcher = new BinanceDataFetcher();
-                var data = await binanceDataFetcher.GetBitcoinPricesAsync(365);
+                var data = await binanceDataFetcher.GetPricesAsync(binanceSymbol, 365);
                 if (data?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded data from Binance!");
                     return CleanCryptoData(data);
                 }
-                
+
                 // If both fail, fall back to CSV
                 Console.WriteLine("Both online APIs failed, falling back to CSV data...");
                 return CleanCryptoData(LoadData());
@@ -148,8 +146,6 @@ namespace CryptoPredictor
             catch (Exception ex)
             {
                 Console.WriteLine($"Error loading online data: {ex.Message}");
-                
-                // Fallback to CSV if API fails
                 Console.WriteLine("Falling back to CSV data...");
                 return CleanCryptoData(LoadData());
             }
@@ -185,38 +181,29 @@ namespace CryptoPredictor
             }
         }
 
-        private static async Task<List<CryptoTimeSeriesData>> LoadTimeSeriesDataAsync()
+        private static async Task<List<CryptoTimeSeriesData>> LoadTimeSeriesDataAsync(string coinGeckoId, string binanceSymbol)
         {
             try
             {
                 // First try Binance
-                try
+                var binanceDataFetcher = new BinanceDataFetcher();
+                var data = await binanceDataFetcher.GetOHLCVAsync(binanceSymbol, "1d", 365);
+                if (data?.Any() == true)
                 {
-                    Console.WriteLine("Trying to load time series data from Binance API...");
-                    var binanceDataFetcher = new BinanceDataFetcher();
-                    var data = await binanceDataFetcher.GetBitcoinOHLCVAsync("1d", 365);
-                    if (data?.Any() == true)
-                    {
-                        Console.WriteLine("Successfully loaded time series data from Binance!");
-                        return data;
-                    }
-                    Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
+                    Console.WriteLine("Successfully loaded time series data from Binance!");
+                    return data;
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Binance API error: {ex.Message}");
-                    Console.WriteLine("Trying CoinGecko API instead...");
-                }
-                
+                Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
+
                 // Then try CoinGecko as backup
                 var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
-                var coinGeckoData = await coinGeckoDataFetcher.GetBitcoinOHLCVAsync(365);
+                var coinGeckoData = await coinGeckoDataFetcher.GetOHLCVAsync(coinGeckoId, 365);
                 if (coinGeckoData?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded time series data from CoinGecko!");
                     return coinGeckoData;
                 }
-                
+
                 // If both fail, fall back to CSV
                 Console.WriteLine("Both online APIs failed, falling back to CSV time series data...");
                 return LoadTimeSeriesData();
@@ -224,8 +211,6 @@ namespace CryptoPredictor
             catch (Exception ex)
             {
                 Console.WriteLine($"Error loading online time series data: {ex.Message}");
-                
-                // Fallback to CSV if API fails
                 Console.WriteLine("Falling back to CSV time series data...");
                 return LoadTimeSeriesData();
             }

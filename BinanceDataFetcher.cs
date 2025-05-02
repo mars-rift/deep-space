@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
-using System.Net.Http.Json;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Text.Json;
@@ -20,15 +19,16 @@ namespace CryptoPredictor
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "CryptoPredictorApp");
         }
 
-        public async Task<List<CryptoTimeSeriesData>> GetBitcoinOHLCVAsync(string interval = "1d", int limit = 365)
+        // Fetch OHLCV time series data for any symbol (e.g., "ETHUSDT")
+        public async Task<List<CryptoTimeSeriesData>> GetOHLCVAsync(string binanceSymbol, string interval = "1d", int limit = 365)
         {
             try
             {
-                Console.WriteLine($"Fetching Bitcoin OHLCV data from Binance (interval: {interval}, limit: {limit})...");
-                var url = $"{BaseUrl}/klines?symbol=BTCUSDT&interval={interval}&limit={limit}";
+                Console.WriteLine($"Fetching OHLCV data from Binance for {binanceSymbol} (interval: {interval}, limit: {limit})...");
+                var url = $"{BaseUrl}/klines?symbol={binanceSymbol}&interval={interval}&limit={limit}";
                 var response = await _httpClient.GetStringAsync(url);
                 var candles = JsonSerializer.Deserialize<List<JsonElement[]>>(response);
-                
+
                 if (candles == null)
                     return new List<CryptoTimeSeriesData>();
 
@@ -37,12 +37,11 @@ namespace CryptoPredictor
                 {
                     if (candle.Length < 6) continue;
 
-                    // Convert timestamp from milliseconds to DateTime
                     var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(candle[0].GetInt64()).DateTime;
-                    
+
                     result.Add(new CryptoTimeSeriesData
                     {
-                        Symbol = "BTC",
+                        Symbol = binanceSymbol.Substring(0, 3).ToUpper(),
                         Timestamp = timestamp,
                         OpenPrice = Convert.ToSingle(candle[1].GetString(), CultureInfo.InvariantCulture),
                         HighPrice = Convert.ToSingle(candle[2].GetString(), CultureInfo.InvariantCulture),
@@ -52,12 +51,11 @@ namespace CryptoPredictor
                     });
                 }
 
-                // Return in chronological order
                 return result.OrderBy(d => d.Timestamp).ToList();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error fetching Bitcoin OHLCV data: {ex.Message}");
+                Console.WriteLine($"Error fetching OHLCV data for {binanceSymbol}: {ex.Message}");
                 if (ex.InnerException != null)
                 {
                     Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
@@ -66,15 +64,14 @@ namespace CryptoPredictor
             }
         }
 
-        // Simple method to get price data for regular model (non-time series)
-        public async Task<List<CryptoData>> GetBitcoinPricesAsync(int limit = 365)
+        // Fetch simple price data for any symbol (e.g., "ETHUSDT")
+        public async Task<List<CryptoData>> GetPricesAsync(string binanceSymbol, int limit = 365)
         {
-            var ohlcvData = await GetBitcoinOHLCVAsync("1d", limit);
-            
-            // Convert OHLCV data to simple price data
-            return ohlcvData.Select(d => new CryptoData { 
-                Symbol = d.Symbol, 
-                Price = d.ClosePrice 
+            var ohlcvData = await GetOHLCVAsync(binanceSymbol, "1d", limit);
+            return ohlcvData.Select(d => new CryptoData
+            {
+                Symbol = d.Symbol,
+                Price = d.ClosePrice
             }).ToList();
         }
     }
