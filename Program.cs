@@ -42,14 +42,14 @@ namespace CryptoPredictor
                     Console.WriteLine("Error: No data found from Binance API.");
                     return;
                 }
-                Console.WriteLine($"Loaded {cryptoData.Count} price records from Binance");
+                
 
                 // Load time series data
                 Console.WriteLine($"Loading time series data for {symbol}...");
                 var timeSeriesData = await LoadTimeSeriesDataAsync(coinGeckoId, binanceSymbol);
                 if (timeSeriesData?.Any() == true)
                 {
-                    Console.WriteLine($"Loaded {timeSeriesData.Count} time series records from Binance");
+                    
 
                     // Rest of your code stays the same
                     Console.WriteLine("Enriching time series data with technical indicators...");
@@ -120,34 +120,37 @@ namespace CryptoPredictor
         {
             try
             {
-                // Try CoinGecko first
                 var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
                 var coinGeckoData = await coinGeckoDataFetcher.GetPricesAsync(coinGeckoId, 365);
                 if (coinGeckoData?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded data from CoinGecko!");
+                    Console.WriteLine($"Loaded {coinGeckoData.Count} price records from CoinGecko");
                     return CleanCryptoData(coinGeckoData);
                 }
                 Console.WriteLine("No data returned from CoinGecko, trying Binance...");
 
-                // Then try Binance as backup
                 var binanceDataFetcher = new BinanceDataFetcher();
                 var data = await binanceDataFetcher.GetPricesAsync(binanceSymbol, 365);
                 if (data?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded data from Binance!");
+                    Console.WriteLine($"Loaded {data.Count} price records from Binance");
                     return CleanCryptoData(data);
                 }
 
-                // If both fail, fall back to CSV
                 Console.WriteLine("Both online APIs failed, falling back to CSV data...");
-                return CleanCryptoData(LoadData());
+                var csvData = LoadData();
+                Console.WriteLine($"Loaded {csvData.Count} price records from CSV");
+                return CleanCryptoData(csvData);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error loading online data: {ex.Message}");
                 Console.WriteLine("Falling back to CSV data...");
-                return CleanCryptoData(LoadData());
+                var csvData = LoadData();
+                Console.WriteLine($"Loaded {csvData.Count} price records from CSV");
+                return CleanCryptoData(csvData);
             }
         }
 
@@ -191,6 +194,7 @@ namespace CryptoPredictor
                 if (data?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded time series data from Binance!");
+                    Console.WriteLine($"Loaded {data.Count} time series records from Binance");
                     return data;
                 }
                 Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
@@ -201,18 +205,23 @@ namespace CryptoPredictor
                 if (coinGeckoData?.Any() == true)
                 {
                     Console.WriteLine("Successfully loaded time series data from CoinGecko!");
+                    Console.WriteLine($"Loaded {coinGeckoData.Count} time series records from CoinGecko");
                     return coinGeckoData;
                 }
 
                 // If both fail, fall back to CSV
                 Console.WriteLine("Both online APIs failed, falling back to CSV time series data...");
-                return LoadTimeSeriesData();
+                var csvData = LoadTimeSeriesData();
+                Console.WriteLine($"Loaded {csvData.Count} time series records from CSV");
+                return csvData;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error loading online time series data: {ex.Message}");
                 Console.WriteLine("Falling back to CSV time series data...");
-                return LoadTimeSeriesData();
+                var csvData = LoadTimeSeriesData();
+                Console.WriteLine($"Loaded {csvData.Count} time series records from CSV");
+                return csvData;
             }
         }
 
