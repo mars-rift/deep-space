@@ -11,7 +11,7 @@ namespace CryptoPredictor
     public class BinanceDataFetcher
     {
         private readonly HttpClient _httpClient;
-        private const string BaseUrl = "https://api.binance.com/api/v3";
+        private const string BaseUrl = "https://api.binance.us/api/v3";
 
         public BinanceDataFetcher()
         {
