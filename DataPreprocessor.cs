@@ -43,12 +43,12 @@ namespace CryptoPredictor
                         currentRecord.PreviousDayChange = 0;
                     }
                     
-                    // Calculate moving averages
-                    currentRecord.MovingAverage5Day = CalculateMovingAverage(symbolData, i, 5);
-                    currentRecord.MovingAverage20Day = CalculateMovingAverage(symbolData, i, 20);
+            // Calculate moving averages (null until enough history)
+            currentRecord.MovingAverage5Day = CalculateMovingAverage(symbolData, i, 5);
+            currentRecord.MovingAverage20Day = CalculateMovingAverage(symbolData, i, 20);
                     
-                    // Calculate RSI
-                    currentRecord.RelativeStrengthIndex = CalculateRSI(symbolData, i, 14);
+            // Calculate RSI (null until enough history)
+            currentRecord.RelativeStrengthIndex = CalculateRSI(symbolData, i, 14);
                     
                     enrichedData.Add(currentRecord);
                 }
@@ -57,10 +57,10 @@ namespace CryptoPredictor
             return enrichedData;
         }
         
-        private static float CalculateMovingAverage(List<CryptoTimeSeriesData> data, int currentIndex, int window)
+    private static float? CalculateMovingAverage(List<CryptoTimeSeriesData> data, int currentIndex, int window)
         {
             if (currentIndex < window - 1)
-                return 0;
+        return null;
                 
             float sum = 0;
             for (int i = 0; i < window; i++)
@@ -71,11 +71,11 @@ namespace CryptoPredictor
             return sum / window;
         }
         
-        private static float CalculateRSI(List<CryptoTimeSeriesData> data, int currentIndex, int window)
+    private static float? CalculateRSI(List<CryptoTimeSeriesData> data, int currentIndex, int window)
         {
             // Simple RSI implementation
             if (currentIndex < window)
-                return 50; // Default neutral value
+        return null; // Not enough history for RSI
                 
             float gainSum = 0;
             float lossSum = 0;
@@ -93,7 +93,7 @@ namespace CryptoPredictor
             float avgLoss = lossSum / window;
             
             if (avgLoss == 0)
-                return 100;
+        return 100;
                 
             float rs = avgGain / avgLoss;
             return 100 - (100 / (1 + rs));

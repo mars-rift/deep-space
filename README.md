@@ -4,18 +4,10 @@ A machine learning-based cryptocurrency prediction tool that utilizes real-time 
 
 ## 🚀 Features
 
-- **Real-time Data**: Fetches current Ethereum pricing from CoinGecko and Binance APIs
-- **Automatic Fallbacks**: Gracefully handles API failures by trying multiple sources
-- **Advanced ML Modeling**: Uses ML.NET to create price prediction models
-- **Technical Indicators**: Calculates moving averages, RSI, and other technical indicators
-- **Data Visualization**: Generates charts for price trends and prediction accuracy
-- **Data Preprocessing**: Cleans data and handles outliers automatically
-- **Feature Engineering**: Creates derived features to improve model accuracy
+ - Offline mode to skip network calls
 
 ## 🛠️ Technologies Used
 
-- **C# / .NET**: Core application framework
-- **ML.NET**: Microsoft's machine learning library for .NET
 - **CoinGecko API**: Primary data source for Crypto prices
 - **Binance API**: Secondary data source
 - **CSVHelper**: For fallback data handling from files
@@ -31,7 +23,17 @@ A machine learning-based cryptocurrency prediction tool that utilizes real-time 
 2. Open the solution in Visual Studio or VS Code
 3. Restore NuGet packages
 4. Build and run the application
+ `dotnet run -c Release`
 
+ To run without hitting APIs (use CSVs only), set:
+
+ PowerShell
+ ```
+ $env:DEEP_OFFLINE="1"
+ dotnet run -c Release
+ ```
+
+ Outputs are written to the `output/` directory with timestamped filenames.
 ```bash
 https://github.com/mars-rift/deep-space.git
 cd deep-space

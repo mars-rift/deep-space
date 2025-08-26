@@ -40,7 +40,7 @@ namespace CryptoPredictor
                     if (i >= volumesArray.GetArrayLength()) continue;
 
                     var priceData = pricesArray[i];
-                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds((long)priceData[0].GetDouble()).DateTime;
+                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds((long)priceData[0].GetDouble()).UtcDateTime;
                     var closePrice = (float)priceData[1].GetDouble();
 
                     var volumeData = volumesArray[i];
@@ -48,7 +48,7 @@ namespace CryptoPredictor
 
                     result.Add(new CryptoTimeSeriesData
                     {
-                        Symbol = coinGeckoId.ToUpper(),
+                        Symbol = (coinGeckoId ?? string.Empty).ToUpperInvariant(),
                         Timestamp = timestamp,
                         OpenPrice = closePrice,
                         HighPrice = closePrice,

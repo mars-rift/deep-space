@@ -37,11 +37,12 @@ namespace CryptoPredictor
                 {
                     if (candle.Length < 6) continue;
 
-                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(candle[0].GetInt64()).DateTime;
+                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(candle[0].GetInt64()).UtcDateTime;
 
                     result.Add(new CryptoTimeSeriesData
                     {
-                        Symbol = binanceSymbol.Substring(0, 3).ToUpper(),
+                        // Derive a reasonable symbol label from the trading pair (e.g., ETHUSDT -> ETH)
+                        Symbol = DeriveBaseSymbol(binanceSymbol),
                         Timestamp = timestamp,
                         OpenPrice = Convert.ToSingle(candle[1].GetString(), CultureInfo.InvariantCulture),
                         HighPrice = Convert.ToSingle(candle[2].GetString(), CultureInfo.InvariantCulture),
@@ -73,6 +74,22 @@ namespace CryptoPredictor
                 Symbol = d.Symbol,
                 Price = d.ClosePrice
             }).ToList();
+        }
+
+        private static string DeriveBaseSymbol(string tradingPair)
+        {
+            if (string.IsNullOrWhiteSpace(tradingPair)) return "";
+            // Common quote assets by length (longest first to ensure proper matching)
+            var quotes = new[] { "BUSD", "USDT", "USDC", "FDUSD", "TUSD", "BTC", "ETH", "BNB", "EUR", "TRY", "BRL", "GBP", "AUD", "RUB", "JPY" };
+            foreach (var q in quotes)
+            {
+                if (tradingPair.EndsWith(q, StringComparison.OrdinalIgnoreCase))
+                {
+                    return tradingPair[..^q.Length].ToUpperInvariant();
+                }
+            }
+            // Fallback: return input uppercased
+            return tradingPair.ToUpperInvariant();
         }
     }
 }

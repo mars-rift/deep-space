@@ -8,6 +8,9 @@ using System.Collections.Generic;
 using System.IO;
 using System;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace CryptoPredictor
 {
@@ -19,6 +22,9 @@ namespace CryptoPredictor
         private const string DEFAULT_SYMBOL = "ETH";
         private const string DEFAULT_COINGECKO_ID = "ethereum";
         private const string DEFAULT_BINANCE_SYMBOL = "ETHUSDT";
+        private static bool OfflineMode =>
+            string.Equals(Environment.GetEnvironmentVariable("DEEP_OFFLINE"), "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable("DEEP_OFFLINE"), "true", StringComparison.OrdinalIgnoreCase);
 
         public static async Task Main(string[] args)
         {
@@ -35,7 +41,7 @@ namespace CryptoPredictor
                 Console.WriteLine("=== Crypto Price Predictor ===");
 
                 // Load and prepare regular data from CoinGecko
-                Console.WriteLine($"Loading basic price data for {symbol} from CoinGecko...");
+                Console.WriteLine($"Loading basic price data for {symbol}...");
                 var cryptoData = await LoadDataAsync(coinGeckoId, binanceSymbol);
                 if (cryptoData?.Any() != true)
                 {
@@ -49,11 +55,34 @@ namespace CryptoPredictor
                 var timeSeriesData = await LoadTimeSeriesDataAsync(coinGeckoId, binanceSymbol);
                 if (timeSeriesData?.Any() == true)
                 {
+                    Console.WriteLine($"Loaded {timeSeriesData.Count} bars. Range: {timeSeriesData.Min(x=>x.Timestamp):u} to {timeSeriesData.Max(x=>x.Timestamp):u}");
+
+                    // Persist snapshots for offline runs (root CSVs and timestamped copies)
+                    try
+                    {
+                        SaveSimplePriceCsv(cryptoData, CSV_FILE_PATH);
+                        SaveTimeSeriesCsv(timeSeriesData, TIMESERIES_CSV_PATH);
+                        var ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                        SaveSimplePriceCsv(cryptoData, Path.Combine(OUTPUT_DIR, $"crypto_{ts}.csv"));
+                        SaveTimeSeriesCsv(timeSeriesData, Path.Combine(OUTPUT_DIR, $"crypto_timeseries_{ts}.csv"));
+                        SaveSnapshotManifest(CSV_FILE_PATH, TIMESERIES_CSV_PATH, symbol);
+                    }
+                    catch (Exception snapEx)
+                    {
+                        Console.WriteLine($"Warning: Failed to save snapshots: {snapEx.Message}");
+                    }
                     
 
                     // Rest of your code stays the same
                     Console.WriteLine("Enriching time series data with technical indicators...");
                     var enrichedData = DataPreprocessor.EnrichTimeSeriesData(timeSeriesData);
+
+                    // Require enough enriched rows with indicators
+                    if (!enrichedData.Any(d => d.MovingAverage5Day.HasValue && d.MovingAverage20Day.HasValue && d.RelativeStrengthIndex.HasValue))
+                    {
+                        Console.WriteLine("Not enough enriched data with indicators to train a model.");
+                        return;
+                    }
 
                     // Train the model using enriched data
                     var model = TrainModel(enrichedData);
@@ -89,7 +118,7 @@ namespace CryptoPredictor
 
                     // Use the model for predictions (example)
                     var latestIndicators = enrichedData.Last(); // latest enriched data point
-                    var maxPrice = enrichedData.Max(x => x.ClosePrice);
+                    var maxPrice = enrichedData.Count > 0 ? enrichedData.Max(x => x.ClosePrice) : 1f;
 
                     var prediction = Predict(model, new EnhancedCryptoData
                     {
@@ -98,9 +127,9 @@ namespace CryptoPredictor
                         LogPrice = (float)Math.Log(Math.Max(1, latestIndicators.ClosePrice)),
                         PriceRatio = latestIndicators.ClosePrice / maxPrice,
                         PriceSquared = latestIndicators.ClosePrice * latestIndicators.ClosePrice,
-                        MovingAverage5Day = latestIndicators.MovingAverage5Day.Value,
-                        MovingAverage20Day = latestIndicators.MovingAverage20Day.Value,
-                        RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex.Value
+                        MovingAverage5Day = latestIndicators.MovingAverage5Day ?? 0f,
+                        MovingAverage20Day = latestIndicators.MovingAverage20Day ?? 0f,
+                        RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex ?? 50f
                     });
 
                     Console.WriteLine($"Predicted Best Price to Buy ETH: {prediction.PredictedPrice:C2}");
@@ -120,23 +149,26 @@ namespace CryptoPredictor
         {
             try
             {
-                var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
-                var coinGeckoData = await coinGeckoDataFetcher.GetPricesAsync(coinGeckoId, 365);
-                if (coinGeckoData?.Any() == true)
+                if (!OfflineMode)
                 {
-                    Console.WriteLine("Successfully loaded data from CoinGecko!");
-                    Console.WriteLine($"Loaded {coinGeckoData.Count} price records from CoinGecko");
-                    return CleanCryptoData(coinGeckoData);
-                }
-                Console.WriteLine("No data returned from CoinGecko, trying Binance...");
+                    var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
+                    var coinGeckoData = await coinGeckoDataFetcher.GetPricesAsync(coinGeckoId, 365);
+                    if (coinGeckoData?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded data from CoinGecko!");
+                        Console.WriteLine($"Loaded {coinGeckoData.Count} price records from CoinGecko");
+                        return CleanCryptoData(coinGeckoData);
+                    }
+                    Console.WriteLine("No data returned from CoinGecko, trying Binance...");
 
-                var binanceDataFetcher = new BinanceDataFetcher();
-                var data = await binanceDataFetcher.GetPricesAsync(binanceSymbol, 365);
-                if (data?.Any() == true)
-                {
-                    Console.WriteLine("Successfully loaded data from Binance!");
-                    Console.WriteLine($"Loaded {data.Count} price records from Binance");
-                    return CleanCryptoData(data);
+                    var binanceDataFetcher = new BinanceDataFetcher();
+                    var data = await binanceDataFetcher.GetPricesAsync(binanceSymbol, 365);
+                    if (data?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded data from Binance!");
+                        Console.WriteLine($"Loaded {data.Count} price records from Binance");
+                        return CleanCryptoData(data);
+                    }
                 }
 
                 Console.WriteLine("Both online APIs failed, falling back to CSV data...");
@@ -188,25 +220,28 @@ namespace CryptoPredictor
         {
             try
             {
-                // First try Binance
-                var binanceDataFetcher = new BinanceDataFetcher();
-                var data = await binanceDataFetcher.GetOHLCVAsync(binanceSymbol, "1d", 365);
-                if (data?.Any() == true)
+                if (!OfflineMode)
                 {
-                    Console.WriteLine("Successfully loaded time series data from Binance!");
-                    Console.WriteLine($"Loaded {data.Count} time series records from Binance");
-                    return data;
-                }
-                Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
+                    // First try Binance
+                    var binanceDataFetcher = new BinanceDataFetcher();
+                    var data = await binanceDataFetcher.GetOHLCVAsync(binanceSymbol, "1d", 365);
+                    if (data?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded time series data from Binance!");
+                        Console.WriteLine($"Loaded {data.Count} time series records from Binance");
+                        return data;
+                    }
+                    Console.WriteLine("No time series data returned from Binance, trying CoinGecko...");
 
-                // Then try CoinGecko as backup
-                var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
-                var coinGeckoData = await coinGeckoDataFetcher.GetOHLCVAsync(coinGeckoId, 365);
-                if (coinGeckoData?.Any() == true)
-                {
-                    Console.WriteLine("Successfully loaded time series data from CoinGecko!");
-                    Console.WriteLine($"Loaded {coinGeckoData.Count} time series records from CoinGecko");
-                    return coinGeckoData;
+                    // Then try CoinGecko as backup
+                    var coinGeckoDataFetcher = new CoinGeckoDataFetcher();
+                    var coinGeckoData = await coinGeckoDataFetcher.GetOHLCVAsync(coinGeckoId, 365);
+                    if (coinGeckoData?.Any() == true)
+                    {
+                        Console.WriteLine("Successfully loaded time series data from CoinGecko!");
+                        Console.WriteLine($"Loaded {coinGeckoData.Count} time series records from CoinGecko");
+                        return coinGeckoData;
+                    }
                 }
 
                 // If both fail, fall back to CSV
@@ -265,36 +300,59 @@ namespace CryptoPredictor
 
             try
             {
-                // Validate data
-                var trainingData = enrichedData
+                // Build next-day label and features per symbol; split chronologically
+                var eligible = enrichedData
                     .Where(d => d.MovingAverage5Day.HasValue && d.MovingAverage20Day.HasValue && d.RelativeStrengthIndex.HasValue)
-                    .Select(d => new EnhancedCryptoData
+                    .OrderBy(d => d.Symbol)
+                    .ThenBy(d => d.Timestamp)
+                    .ToList();
+
+                var shifted = new List<EnhancedCryptoData>();
+                var bySymbol = eligible.GroupBy(x => x.Symbol);
+                foreach (var g in bySymbol)
+                {
+                    var rows = g.OrderBy(x => x.Timestamp).ToList();
+                    for (int i = 0; i < rows.Count - 1; i++)
                     {
-                        Symbol = d.Symbol,
-                        Price = d.ClosePrice,
-                        LogPrice = (float)Math.Log(Math.Max(1, d.ClosePrice)),
-                        PriceRatio = d.ClosePrice / enrichedData.Max(x => x.ClosePrice),
-                        PriceSquared = d.ClosePrice * d.ClosePrice,
-                        MovingAverage5Day = d.MovingAverage5Day.Value,
-                        MovingAverage20Day = d.MovingAverage20Day.Value,
-                        RelativeStrengthIndex = d.RelativeStrengthIndex.Value
-                    }).ToList();
+                        var cur = rows[i];
+                        var nxt = rows[i + 1];
+                        shifted.Add(new EnhancedCryptoData
+                        {
+                            Symbol = cur.Symbol,
+                            // Price becomes next day's close (label)
+                            Price = nxt.ClosePrice,
+                            LogPrice = (float)Math.Log(Math.Max(1, cur.ClosePrice)),
+                            PriceRatio = 0f, // placeholder not used in features
+                            PriceSquared = cur.ClosePrice * cur.ClosePrice,
+                            MovingAverage5Day = cur.MovingAverage5Day.GetValueOrDefault(),
+                            MovingAverage20Day = cur.MovingAverage20Day.GetValueOrDefault(),
+                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault()
+                        });
+                    }
+                }
+
+                if (shifted.Count < 50)
+                    throw new InvalidOperationException("Not enough shifted rows to train (need at least 50).");
+
+                // Chronological split 80/20
+                var ordered = shifted.OrderBy(x => x.Symbol).ThenBy(x => x.LogPrice).ToList();
+                // Better ordering by implicit time: reconstruct via grouping retained above; here keep original order
+                ordered = shifted; // already chronological per-symbol appended
+                int splitIdx = (int)(ordered.Count * 0.8);
+                var trainingData = ordered.Take(splitIdx).ToList();
+                var testData = ordered.Skip(splitIdx).ToList();
 
                 var dataView = context.Data.LoadFromEnumerable(trainingData);
+                var testDataView = context.Data.LoadFromEnumerable(testData);
 
-                // Pipeline with technical indicators
+                // Pipeline with technical indicators only (avoid target leakage from same-bar price transforms)
                 var pipeline = context.Transforms.ReplaceMissingValues(new[] {
-                        new InputOutputColumnPair("Price"),
-                        new InputOutputColumnPair("LogPrice"),
-                        new InputOutputColumnPair("PriceRatio"),
-                        new InputOutputColumnPair("PriceSquared"),
                         new InputOutputColumnPair("MovingAverage5Day"),
                         new InputOutputColumnPair("MovingAverage20Day"),
                         new InputOutputColumnPair("RelativeStrengthIndex")
                     })
                     .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
                     .Append(context.Transforms.Concatenate("Features",
-                        "LogPrice", "PriceRatio", "PriceSquared",
                         "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex",
                         "SymbolEncoded"))
                     .Append(context.Transforms.NormalizeMinMax("Features"))
@@ -303,11 +361,39 @@ namespace CryptoPredictor
                         featureColumnName: "Features",
                         maximumNumberOfIterations: 100));
 
-                var splitData = context.Data.TrainTestSplit(dataView, testFraction: 0.2, seed: 42);
-
                 Console.WriteLine("Starting model training...");
-                var model = pipeline.Fit(splitData.TrainSet);
+                var model = pipeline.Fit(dataView);
                 Console.WriteLine("Model training completed successfully");
+
+                // Evaluate on test set
+                var predictions = model.Transform(testDataView);
+                var metrics = context.Regression.Evaluate(predictions, labelColumnName: "Price", scoreColumnName: "Score");
+                Console.WriteLine($"Evaluation — RMSE: {metrics.RootMeanSquaredError:F4}, MAE: {metrics.MeanAbsoluteError:F4}, R^2: {metrics.RSquared:F4}");
+
+                // Optional: permutation feature importance
+                PrintFeatureImportance(context, model, testDataView);
+                // Walk-forward evaluation (3 folds)
+                try
+                {
+                    WalkForwardEvaluate(context, trainingData, folds: 3);
+                }
+                catch (Exception wfEx)
+                {
+                    Console.WriteLine($"Walk-forward evaluation warning: {wfEx.Message}");
+                }
+
+                // Save model for reuse
+                try
+                {
+                    if (!Directory.Exists(OUTPUT_DIR)) Directory.CreateDirectory(OUTPUT_DIR);
+                    var modelPath = Path.Combine(OUTPUT_DIR, $"model_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
+                    context.Model.Save(model, dataView.Schema, modelPath);
+                    Console.WriteLine($"Model saved to: {Path.GetFullPath(modelPath)}");
+                }
+                catch (Exception saveEx)
+                {
+                    Console.WriteLine($"Warning: Failed to save model: {saveEx.Message}");
+                }
 
                 return model;
             }
@@ -477,25 +563,34 @@ namespace CryptoPredictor
 
             try
             {
-                // Ensure we have valid technical indicators
-                var validData = enrichedData
+                // Ensure we have valid technical indicators and shift label by +1
+                var valid = enrichedData
                     .Where(d => d.MovingAverage5Day.HasValue && d.MovingAverage20Day.HasValue && d.RelativeStrengthIndex.HasValue)
+                    .OrderBy(d => d.Symbol)
+                    .ThenBy(d => d.Timestamp)
                     .ToList();
 
-                var maxPrice = validData.Max(d => d.ClosePrice);
-
-                // Create enhanced data matching the training schema
-                var enhancedData = validData.Select(d => new EnhancedCryptoData
+                var enhancedData = new List<EnhancedCryptoData>();
+                foreach (var g in valid.GroupBy(v => v.Symbol))
                 {
-                    Symbol = d.Symbol,
-                    Price = d.ClosePrice,
-                    LogPrice = (float)Math.Log(Math.Max(1, d.ClosePrice)),
-                    PriceRatio = d.ClosePrice / maxPrice,
-                    PriceSquared = d.ClosePrice * d.ClosePrice,
-                    MovingAverage5Day = d.MovingAverage5Day.Value,
-                    MovingAverage20Day = d.MovingAverage20Day.Value,
-                    RelativeStrengthIndex = d.RelativeStrengthIndex.Value
-                }).ToList();
+                    var rows = g.OrderBy(x => x.Timestamp).ToList();
+                    for (int i = 0; i < rows.Count - 1; i++)
+                    {
+                        var cur = rows[i];
+                        var nxt = rows[i + 1];
+                        enhancedData.Add(new EnhancedCryptoData
+                        {
+                            Symbol = cur.Symbol,
+                            Price = nxt.ClosePrice,
+                            LogPrice = (float)Math.Log(Math.Max(1, cur.ClosePrice)),
+                            PriceRatio = 0f,
+                            PriceSquared = cur.ClosePrice * cur.ClosePrice,
+                            MovingAverage5Day = cur.MovingAverage5Day.GetValueOrDefault(),
+                            MovingAverage20Day = cur.MovingAverage20Day.GetValueOrDefault(),
+                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault()
+                        });
+                    }
+                }
 
                 // Load enhanced data into IDataView
                 var dataView = context.Data.LoadFromEnumerable(enhancedData);
@@ -539,6 +634,130 @@ namespace CryptoPredictor
             }
 
             return residuals;
+        }
+
+        private static void WalkForwardEvaluate(MLContext context, List<EnhancedCryptoData> orderedTrainingData, int folds)
+        {
+            if (orderedTrainingData.Count < folds * 20) return; // need enough data
+
+            Console.WriteLine($"Walk-forward evaluation ({folds} folds):");
+            var foldMetrics = new List<(double rmse, double mae, double r2)>();
+
+            int n = orderedTrainingData.Count;
+            for (int f = 1; f <= folds; f++)
+            {
+                int trainEnd = (int)(n * (0.5 + 0.1 * f)); // 60%, 70%, 80%
+                if (trainEnd >= n - 5) break;
+                int testEnd = Math.Min(n, trainEnd + Math.Max(5, (int)(n * 0.1)));
+                var train = orderedTrainingData.Take(trainEnd).ToList();
+                var test = orderedTrainingData.Skip(trainEnd).Take(testEnd - trainEnd).ToList();
+
+                var pipeline = context.Transforms.ReplaceMissingValues(new[] {
+                        new InputOutputColumnPair("MovingAverage5Day"),
+                        new InputOutputColumnPair("MovingAverage20Day"),
+                        new InputOutputColumnPair("RelativeStrengthIndex")
+                    })
+                    .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
+                    .Append(context.Transforms.Concatenate("Features",
+                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex",
+                        "SymbolEncoded"))
+                    .Append(context.Transforms.NormalizeMinMax("Features"))
+                    .Append(context.Regression.Trainers.Sdca(
+                        labelColumnName: "Price",
+                        featureColumnName: "Features",
+                        maximumNumberOfIterations: 100));
+
+                var model = pipeline.Fit(context.Data.LoadFromEnumerable(train));
+                var preds = model.Transform(context.Data.LoadFromEnumerable(test));
+                var m = context.Regression.Evaluate(preds, labelColumnName: "Price", scoreColumnName: "Score");
+                foldMetrics.Add((m.RootMeanSquaredError, m.MeanAbsoluteError, m.RSquared));
+                Console.WriteLine($"  Fold {f}: RMSE={m.RootMeanSquaredError:F4} MAE={m.MeanAbsoluteError:F4} R^2={m.RSquared:F4}");
+            }
+
+            if (foldMetrics.Count > 0)
+            {
+                var avgRmse = foldMetrics.Average(x => x.rmse);
+                var avgMae = foldMetrics.Average(x => x.mae);
+                var avgr2 = foldMetrics.Average(x => x.r2);
+                Console.WriteLine($"  Avg: RMSE={avgRmse:F4} MAE={avgMae:F4} R^2={avgr2:F4}");
+            }
+        }
+
+        private static void SaveSimplePriceCsv(List<CryptoData> data, string path)
+        {
+            var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+            {
+                HasHeaderRecord = true
+            };
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+            using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
+            using var csv = new CsvWriter(writer, config);
+            csv.WriteHeader<CryptoData>();
+            csv.NextRecord();
+            foreach (var row in data)
+            {
+                csv.WriteRecord(row);
+                csv.NextRecord();
+            }
+        }
+
+        private static void SaveTimeSeriesCsv(List<CryptoTimeSeriesData> data, string path)
+        {
+            var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+            {
+                HasHeaderRecord = true
+            };
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+            using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
+            using var csv = new CsvWriter(writer, config);
+            csv.WriteField("symbol"); csv.WriteField("timestamp"); csv.WriteField("open"); csv.WriteField("high"); csv.WriteField("low"); csv.WriteField("close"); csv.WriteField("volume");
+            csv.NextRecord();
+            foreach (var r in data.OrderBy(d => d.Timestamp))
+            {
+                csv.WriteField(r.Symbol);
+                csv.WriteField(r.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+                csv.WriteField(r.OpenPrice);
+                csv.WriteField(r.HighPrice);
+                csv.WriteField(r.LowPrice);
+                csv.WriteField(r.ClosePrice);
+                csv.WriteField(r.Volume);
+                csv.NextRecord();
+            }
+        }
+
+        private static void SaveSnapshotManifest(string simplePath, string tsPath, string symbol)
+        {
+            try
+            {
+                var manifest = new
+                {
+                    createdAt = DateTime.UtcNow,
+                    symbol,
+                    files = new[]
+                    {
+                        new { path = Path.GetFullPath(simplePath), sha256 = ComputeSha256(simplePath) },
+                        new { path = Path.GetFullPath(tsPath), sha256 = ComputeSha256(tsPath) }
+                    }
+                };
+                var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+                var outPath = Path.Combine(OUTPUT_DIR, $"snapshot_manifest_{DateTime.Now:yyyyMMdd_HHmmss}.json");
+                Directory.CreateDirectory(OUTPUT_DIR);
+                File.WriteAllText(outPath, json, new UTF8Encoding(false));
+                Console.WriteLine($"Snapshot manifest saved: {Path.GetFullPath(outPath)}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Failed to write manifest: {ex.Message}");
+            }
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            if (!File.Exists(path)) return string.Empty;
+            using var sha = SHA256.Create();
+            using var fs = File.OpenRead(path);
+            var hash = sha.ComputeHash(fs);
+            return string.Concat(hash.Select(b => b.ToString("x2")));
         }
 
         private static List<CryptoData> CleanCryptoData(List<CryptoData> data)
@@ -586,8 +805,8 @@ namespace CryptoPredictor
     {
         public CryptoDataMap()
         {
-            Map(m => m.Symbol).Name("Symbol");
-            Map(m => m.Price).Name("Price")
+            Map(m => m.Symbol).Name("Symbol", "symbol");
+            Map(m => m.Price).Name("Price", "price")
                 .TypeConverterOption.CultureInfo(CultureInfo.InvariantCulture);
         }
     }
