@@ -4,7 +4,12 @@ A machine learning-based cryptocurrency prediction tool that utilizes real-time 
 
 ## 🚀 Features
 
- - Offline mode to skip network calls
+- Offline mode to skip network calls (use CSV data only)
+- Time-series enrichment: moving averages (5/20), RSI, recent price returns
+- **Volatility features**: rolling volatility at multiple scales (7/14/21 days) and per-symbol z-scores
+- **Volatility Index**: model‑informed, percentile-based index (Low / Medium / High)
+- Permutation Feature Importance (PFI) support for explainability
+- Visualizations: price charts, prediction vs actual, volatility series and volatility index charts
 
 ## 🛠️ Technologies Used
 

@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.ML.Trainers;
 
 namespace CryptoPredictor
 {
@@ -127,9 +128,16 @@ namespace CryptoPredictor
                         LogPrice = (float)Math.Log(Math.Max(1, latestIndicators.ClosePrice)),
                         PriceRatio = latestIndicators.ClosePrice / maxPrice,
                         PriceSquared = latestIndicators.ClosePrice * latestIndicators.ClosePrice,
+                        PriceChangePct = latestIndicators.PriceChangePercentage.GetValueOrDefault(),
                         MovingAverage5Day = latestIndicators.MovingAverage5Day ?? 0f,
                         MovingAverage20Day = latestIndicators.MovingAverage20Day ?? 0f,
-                        RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex ?? 50f
+                        RelativeStrengthIndex = latestIndicators.RelativeStrengthIndex ?? 50f,
+                        Volatility7 = latestIndicators.Volatility7 ?? 0f,
+                        Volatility14 = latestIndicators.Volatility14 ?? 0f,
+                        Volatility21 = latestIndicators.Volatility21 ?? 0f,
+                        Volatility7Z = latestIndicators.Volatility7Z ?? 0f,
+                        Volatility14Z = latestIndicators.Volatility14Z ?? 0f,
+                        Volatility21Z = latestIndicators.Volatility21Z ?? 0f
                     });
 
                     Console.WriteLine($"Predicted Best Price to Buy ETH: {prediction.PredictedPrice:C2}");
@@ -324,15 +332,26 @@ namespace CryptoPredictor
                             LogPrice = (float)Math.Log(Math.Max(1, cur.ClosePrice)),
                             PriceRatio = 0f, // placeholder not used in features
                             PriceSquared = cur.ClosePrice * cur.ClosePrice,
+                            // recently observed return can carry momentum information
+                            PriceChangePct = cur.PriceChangePercentage.GetValueOrDefault(),
                             MovingAverage5Day = cur.MovingAverage5Day.GetValueOrDefault(),
                             MovingAverage20Day = cur.MovingAverage20Day.GetValueOrDefault(),
-                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault()
+                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault(),
+                            Volatility7 = cur.Volatility7.GetValueOrDefault(),
+                            Volatility14 = cur.Volatility14.GetValueOrDefault(),
+                            Volatility21 = cur.Volatility21.GetValueOrDefault(),
+                            Volatility7Z = cur.Volatility7Z.GetValueOrDefault(),
+                            Volatility14Z = cur.Volatility14Z.GetValueOrDefault(),
+                            Volatility21Z = cur.Volatility21Z.GetValueOrDefault()
                         });
                     }
                 }
 
                 if (shifted.Count < 50)
                     throw new InvalidOperationException("Not enough shifted rows to train (need at least 50).");
+
+                // Determine whether we actually have multiple symbols; if not, skip one-hot to avoid constant features
+                var distinctSymbolCount = shifted.Select(s => s.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
                 // Chronological split 80/20
                 var ordered = shifted.OrderBy(x => x.Symbol).ThenBy(x => x.LogPrice).ToList();
@@ -346,15 +365,34 @@ namespace CryptoPredictor
                 var testDataView = context.Data.LoadFromEnumerable(testData);
 
                 // Pipeline with technical indicators only (avoid target leakage from same-bar price transforms)
-                var pipeline = context.Transforms.ReplaceMissingValues(new[] {
+                IEstimator<ITransformer> pipeline = context.Transforms.ReplaceMissingValues(new[] {
                         new InputOutputColumnPair("MovingAverage5Day"),
                         new InputOutputColumnPair("MovingAverage20Day"),
-                        new InputOutputColumnPair("RelativeStrengthIndex")
+                        new InputOutputColumnPair("RelativeStrengthIndex"),
+                        new InputOutputColumnPair("PriceChangePct"),
+                        new InputOutputColumnPair("Volatility7"),
+                        new InputOutputColumnPair("Volatility14"),
+                        new InputOutputColumnPair("Volatility21"),
+                        new InputOutputColumnPair("Volatility7Z"),
+                        new InputOutputColumnPair("Volatility14Z"),
+                        new InputOutputColumnPair("Volatility21Z")
                     })
-                    .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
-                    .Append(context.Transforms.Concatenate("Features",
-                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex",
-                        "SymbolEncoded"))
+                    .Append(context.Transforms.Concatenate("NumFeatures",
+                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex", "PriceChangePct", "Volatility7", "Volatility14", "Volatility21", "Volatility7Z", "Volatility14Z", "Volatility21Z"));
+
+                if (distinctSymbolCount > 1)
+                {
+                    pipeline = pipeline
+                        .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
+                        .Append(context.Transforms.Concatenate("Features", "NumFeatures", "SymbolEncoded"));
+                }
+                else
+                {
+                    pipeline = pipeline
+                        .Append(context.Transforms.CopyColumns("Features", "NumFeatures"));
+                }
+
+                pipeline = pipeline
                     .Append(context.Transforms.NormalizeMinMax("Features"))
                     .Append(context.Regression.Trainers.Sdca(
                         labelColumnName: "Price",
@@ -370,8 +408,45 @@ namespace CryptoPredictor
                 var metrics = context.Regression.Evaluate(predictions, labelColumnName: "Price", scoreColumnName: "Score");
                 Console.WriteLine($"Evaluation — RMSE: {metrics.RootMeanSquaredError:F4}, MAE: {metrics.MeanAbsoluteError:F4}, R^2: {metrics.RSquared:F4}");
 
-                // Optional: permutation feature importance
-                PrintFeatureImportance(context, model, testDataView);
+                // Optional: permutation feature importance (returns importance dictionary)
+                var featureImportances = PrintFeatureImportance(context, model, testDataView);
+
+                // Compute a model-informed volatility index per symbol (using PFI-derived weights)
+                try
+                {
+                    var volIndexSeries = ComputeAndPrintVolatilityIndex(enrichedData, featureImportances);
+
+                    // Plot volatility series and volatility index per symbol
+                    foreach (var kv in volIndexSeries)
+                    {
+                        var symbol = kv.Key;
+                        var series = kv.Value;
+                        string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
+                        var volPath = Path.Combine(OUTPUT_DIR, $"{symbol}_volatility_{ts}.png");
+                        Visualization.CreateVolatilityChart(enrichedData, symbol, volPath);
+                        Console.WriteLine($"Volatility chart saved to: {Path.GetFullPath(volPath)}");
+
+                        var idxPath = Path.Combine(OUTPUT_DIR, $"{symbol}_volatility_index_{ts}.png");
+                        Visualization.CreateVolatilityIndexChart(series, symbol, idxPath);
+                        Console.WriteLine($"Volatility index chart saved to: {Path.GetFullPath(idxPath)}");
+                    }
+                }
+                catch (Exception viEx)
+                {
+                    Console.WriteLine($"Volatility index warning: {viEx.Message}");
+                }
+
+                // Quick experiment: compare models using different volatility windows
+                try
+                {
+                    EvaluateVolatilityVariants(context, trainingData, testData);
+                }
+                catch (Exception evEx)
+                {
+                    Console.WriteLine($"Volatility experiment warning: {evEx.Message}");
+                }
+
                 // Walk-forward evaluation (3 folds)
                 try
                 {
@@ -403,60 +478,205 @@ namespace CryptoPredictor
             }
         }
 
-        private static void PrintFeatureImportance(MLContext context, ITransformer model, IDataView data)
+        private static void EvaluateVolatilityVariants(MLContext context, List<EnhancedCryptoData> train, List<EnhancedCryptoData> test)
         {
-            try
+            var variants = new List<string[]>
             {
-                // Transform the input data to ensure Features column exists
-                var transformedData = model.Transform(data);
+                new[] { "Volatility7" },
+                new[] { "Volatility14" },
+                new[] { "Volatility21" },
+                new[] { "Volatility7", "Volatility14", "Volatility21" }
+            };
 
-                // Get the schema to verify column names
-                var schema = transformedData.Schema;
-                if (schema.GetColumnOrNull("Features") == null)
+            Console.WriteLine("\nVolatility window experiments:");
+            foreach (var v in variants)
+            {
+                var featureList = new List<string> { "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex", "PriceChangePct" };
+                foreach (var baseName in v)
                 {
-                    Console.WriteLine("\nAvailable columns in schema:");
-                    foreach (var column in schema)
-                    {
-                        Console.WriteLine($"- {column.Name} ({column.Type})");
-                    }
-                    throw new InvalidOperationException("Features column not found in the transformed data schema");
+                    featureList.Add(baseName);
+                    featureList.Add(baseName + "Z");
                 }
 
-                var permutationMetrics = context.Regression.PermutationFeatureImportance(
-                    model,
-                    transformedData,  // Use transformed data instead of original
-                    labelColumnName: "Price");
+                var pipeline = context.Transforms.ReplaceMissingValues(featureList.Select(f => new InputOutputColumnPair(f)).ToArray())
+                    .Append(context.Transforms.Concatenate("Features", featureList.ToArray()))
+                    .Append(context.Transforms.NormalizeMinMax("Features"))
+                    .Append(context.Regression.Trainers.Sdca(labelColumnName: "Price", featureColumnName: "Features", maximumNumberOfIterations: 100));
 
-                Console.WriteLine("\nFeature Importance:");
-                foreach (var metric in permutationMetrics)
+                var model = pipeline.Fit(context.Data.LoadFromEnumerable(train));
+                var preds = model.Transform(context.Data.LoadFromEnumerable(test));
+                var m = context.Regression.Evaluate(preds, labelColumnName: "Price", scoreColumnName: "Score");
+
+                Console.WriteLine($" Variant [{string.Join(',', v)}] => RMSE={m.RootMeanSquaredError:F4}, MAE={m.MeanAbsoluteError:F4}, R^2={m.RSquared:F4}");
+            }
+        }
+
+        private static IDictionary<string,double> PrintFeatureImportance(MLContext context, ITransformer model, IDataView data)
+        {
+            var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                // Prefer calling PFI with the strongly-typed regression transformer so it
+                // uses the trainer's configured feature column name.
+                RegressionPredictionTransformer<LinearRegressionModelParameters>? reg = null;
+                if (model is TransformerChain<ITransformer> chain)
                 {
-                    if (metric.Value?.RootMeanSquaredError?.Mean != null)
+                    foreach (var tr in chain)
                     {
-                        Console.WriteLine($"Feature {metric.Key}: {metric.Value.RootMeanSquaredError.Mean:F4}");
+                        if (tr is RegressionPredictionTransformer<LinearRegressionModelParameters> r)
+                            reg = r;
+                    }
+                }
+                else if (model is RegressionPredictionTransformer<LinearRegressionModelParameters> r)
+                {
+                    reg = r;
+                }
+
+                if (reg != null)
+                {
+                    // Get slot names for pretty-printing
+                    var preview = reg.Transform(data);
+                    var schema = preview.Schema;
+                    var featureNames = new List<string>();
+                    if (schema.GetColumnOrNull("Features") != null)
+                    {
+                        try
+                        {
+                            var featureCol = schema["Features"];
+                            VBuffer<ReadOnlyMemory<char>> slotNames = default;
+                            featureCol.GetSlotNames(ref slotNames);
+                            if (slotNames.Length > 0)
+                                featureNames = slotNames.DenseValues().Select(s => s.ToString()).ToList();
+                        }
+                        catch { }
+                    }
+
+                    // Use the transformed preview (has the 'Features' column) when calling PFI
+                    var transformedPreview = reg.Transform(data);
+
+                    var pfi = context.Regression.PermutationFeatureImportance(
+                        reg,
+                        transformedPreview,
+                        labelColumnName: "Price");
+
+                    // Align names/count
+                    if (featureNames.Count == 0)
+                        featureNames = Enumerable.Range(0, pfi.Length).Select(i => $"Feature[{i}]").ToList();
+
+                    Console.WriteLine("\nFeature Importance:");
+                    for (int i = 0; i < pfi.Length && i < featureNames.Count; i++)
+                    {
+                        var mean = pfi[i].RootMeanSquaredError.Mean;
+                        if (double.IsNaN(mean)) mean = 0;
+                        Console.WriteLine($"Feature {featureNames[i]}: {mean:F4}");
+                        result[featureNames[i]] = mean;
+                    }
+                }
+                else
+                {
+                    // Fallback to the generic overload (older ML.NET) and print what we can
+                    var preview = model.Transform(data);
+                    var schema = preview.Schema;
+
+                    // Call PFI on the transformed preview where 'Features' exists
+                    var pfiDict = context.Regression.PermutationFeatureImportance(
+                        model,
+                        preview,
+                        labelColumnName: "Price");
+
+                    Console.WriteLine("\nFeature Importance:");
+                    foreach (var kvp in pfiDict.OrderByDescending(k => k.Value.RootMeanSquaredError.Mean))
+                    {
+                        var mean = kvp.Value.RootMeanSquaredError.Mean;
+                        if (double.IsNaN(mean)) mean = 0;
+                        Console.WriteLine($"Feature {kvp.Key}: {mean:F4}");
+                        result[kvp.Key] = mean;
                     }
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Feature importance calculation error: {ex.Message}");
-                // Add schema information to help diagnose the issue
                 try
                 {
                     Console.WriteLine("\nAvailable columns in schema:");
                     foreach (var column in data.Schema)
-                    {
                         Console.WriteLine($"- {column.Name} ({column.Type})");
-                    }
                 }
-                catch
-                {
-                    // Ignore schema printing errors
-                }
+                catch { }
                 if (ex.InnerException != null)
-                {
                     Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
-                }
             }
+
+            return result;
+        }
+
+        private static Dictionary<string, List<(DateTime Timestamp, double Index)>> ComputeAndPrintVolatilityIndex(List<CryptoTimeSeriesData> enrichedData, IDictionary<string,double> featureImportances)
+        {
+            var seriesBySymbol = new Dictionary<string, List<(DateTime Timestamp, double Index)>>();
+
+            // Volatility feature names we care about
+            var volNames = new[] { "Volatility7", "Volatility14", "Volatility21" };
+
+            // Get weights from feature importances (use absolute values)
+            var weights = new double[volNames.Length];
+            for (int i = 0; i < volNames.Length; i++)
+            {
+                var key = featureImportances.Keys.FirstOrDefault(k => k.Equals(volNames[i], StringComparison.OrdinalIgnoreCase) || k.IndexOf(volNames[i], StringComparison.OrdinalIgnoreCase) >= 0);
+                if (key != null && featureImportances.TryGetValue(key, out var v))
+                    weights[i] = Math.Abs(v);
+                else
+                    weights[i] = 0.0;
+            }
+
+            // If all weights are zero, fall back to equal weights
+            if (weights.All(w => w == 0))
+            {
+                for (int i = 0; i < weights.Length; i++) weights[i] = 1.0;
+            }
+
+            // Normalize weights
+            var sumW = weights.Sum();
+            if (sumW == 0) sumW = 1.0;
+            for (int i = 0; i < weights.Length; i++) weights[i] /= sumW;
+
+            // Compute index per symbol and collect time series
+            foreach (var g in enrichedData.GroupBy(d => d.Symbol))
+            {
+                var symbol = g.Key;
+                var rows = g.OrderBy(d => d.Timestamp).ToList();
+
+                var scores = new List<double>();
+                var tsPairs = new List<(DateTime Timestamp, double Index)>();
+                foreach (var r in rows)
+                {
+                    var v7 = r.Volatility7 ?? 0f;
+                    var v14 = r.Volatility14 ?? 0f;
+                    var v21 = r.Volatility21 ?? 0f;
+                    var score = weights[0] * v7 + weights[1] * v14 + weights[2] * v21;
+                    scores.Add(score);
+                    tsPairs.Add((r.Timestamp, score));
+                }
+
+                if (!scores.Any()) continue;
+
+                // Compute percentile of latest score
+                var latestScore = scores.Last();
+                var sorted = scores.OrderBy(s => s).ToList();
+                int less = sorted.TakeWhile(s => s < latestScore).Count();
+                int equal = sorted.Count(s => s == latestScore);
+                // percentile with averaging ties
+                double percentile = (less + 0.5 * equal) / sorted.Count;
+                double index = percentile * 100.0;
+
+                string band = index < 33 ? "Low" : (index < 66 ? "Medium" : "High");
+
+                Console.WriteLine($"Volatility Index for {symbol}: {index:F1} ({band}) — weighted score: {latestScore:F4}");
+
+                seriesBySymbol[symbol] = tsPairs;
+            }
+
+            return seriesBySymbol;
         }
 
         private static void PlotResiduals(IDataView predictions)
@@ -585,9 +805,16 @@ namespace CryptoPredictor
                             LogPrice = (float)Math.Log(Math.Max(1, cur.ClosePrice)),
                             PriceRatio = 0f,
                             PriceSquared = cur.ClosePrice * cur.ClosePrice,
+                            PriceChangePct = cur.PriceChangePercentage.GetValueOrDefault(),
                             MovingAverage5Day = cur.MovingAverage5Day.GetValueOrDefault(),
                             MovingAverage20Day = cur.MovingAverage20Day.GetValueOrDefault(),
-                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault()
+                            RelativeStrengthIndex = cur.RelativeStrengthIndex.GetValueOrDefault(),
+                            Volatility7 = cur.Volatility7.GetValueOrDefault(),
+                            Volatility14 = cur.Volatility14.GetValueOrDefault(),
+                            Volatility21 = cur.Volatility21.GetValueOrDefault(),
+                            Volatility7Z = cur.Volatility7Z.GetValueOrDefault(),
+                            Volatility14Z = cur.Volatility14Z.GetValueOrDefault(),
+                            Volatility21Z = cur.Volatility21Z.GetValueOrDefault()
                         });
                     }
                 }
@@ -643,6 +870,7 @@ namespace CryptoPredictor
             Console.WriteLine($"Walk-forward evaluation ({folds} folds):");
             var foldMetrics = new List<(double rmse, double mae, double r2)>();
 
+
             int n = orderedTrainingData.Count;
             for (int f = 1; f <= folds; f++)
             {
@@ -652,15 +880,36 @@ namespace CryptoPredictor
                 var train = orderedTrainingData.Take(trainEnd).ToList();
                 var test = orderedTrainingData.Skip(trainEnd).Take(testEnd - trainEnd).ToList();
 
-                var pipeline = context.Transforms.ReplaceMissingValues(new[] {
+                var distinctSymbolCount = train.Select(s => s.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+                IEstimator<ITransformer> pipeline = context.Transforms.ReplaceMissingValues(new[] {
                         new InputOutputColumnPair("MovingAverage5Day"),
                         new InputOutputColumnPair("MovingAverage20Day"),
-                        new InputOutputColumnPair("RelativeStrengthIndex")
+                        new InputOutputColumnPair("RelativeStrengthIndex"),
+                        new InputOutputColumnPair("PriceChangePct"),
+                        new InputOutputColumnPair("Volatility7"),
+                        new InputOutputColumnPair("Volatility14"),
+                        new InputOutputColumnPair("Volatility21"),
+                        new InputOutputColumnPair("Volatility7Z"),
+                        new InputOutputColumnPair("Volatility14Z"),
+                        new InputOutputColumnPair("Volatility21Z")
                     })
-                    .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
-                    .Append(context.Transforms.Concatenate("Features",
-                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex",
-                        "SymbolEncoded"))
+                    .Append(context.Transforms.Concatenate("NumFeatures",
+                        "MovingAverage5Day", "MovingAverage20Day", "RelativeStrengthIndex", "PriceChangePct", "Volatility7", "Volatility14", "Volatility21", "Volatility7Z", "Volatility14Z", "Volatility21Z"));
+
+                if (distinctSymbolCount > 1)
+                {
+                    pipeline = pipeline
+                        .Append(context.Transforms.Categorical.OneHotEncoding("SymbolEncoded", "Symbol"))
+                        .Append(context.Transforms.Concatenate("Features", "NumFeatures", "SymbolEncoded"));
+                }
+                else
+                {
+                    pipeline = pipeline
+                        .Append(context.Transforms.CopyColumns("Features", "NumFeatures"));
+                }
+
+                pipeline = pipeline
                     .Append(context.Transforms.NormalizeMinMax("Features"))
                     .Append(context.Regression.Trainers.Sdca(
                         labelColumnName: "Price",
@@ -851,6 +1100,13 @@ namespace CryptoPredictor
         public float LogPrice { get; set; }
         public float PriceRatio { get; set; }
         public float PriceSquared { get; set; }
+        public float PriceChangePct { get; set; }
+        public float Volatility7 { get; set; }
+        public float Volatility14 { get; set; }
+        public float Volatility21 { get; set; }
+        public float Volatility7Z { get; set; }
+        public float Volatility14Z { get; set; }
+        public float Volatility21Z { get; set; }
         public float MovingAverage5Day { get; set; }
         public float MovingAverage20Day { get; set; }
         public float RelativeStrengthIndex { get; set; }

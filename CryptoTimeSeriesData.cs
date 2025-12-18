@@ -20,6 +20,16 @@ namespace CryptoPredictor
         public float? MovingAverage20Day { get; set; }
         public float? RelativeStrengthIndex { get; set; }
 
+        // New features
+        public float? Volatility7 { get; set; }
+        public float? Volatility14 { get; set; }
+        public float? Volatility21 { get; set; }
+
+        // Volatility z-scores
+        public float? Volatility7Z { get; set; }
+        public float? Volatility14Z { get; set; }
+        public float? Volatility21Z { get; set; }
+
         // Optional properties for compatibility with other code
         public float? MA7 { get; set; }
         public float? MA14 { get; set; }

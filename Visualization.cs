@@ -57,5 +57,75 @@ namespace CryptoPredictor
 
             Console.WriteLine($"Prediction vs actual chart created at: {Path.GetFullPath(outputPath)}");
         }
+
+        public static void CreateVolatilityChart(List<CryptoTimeSeriesData> data, string symbol, string outputPath = "volatility_chart.png")
+        {
+            if (data == null || !data.Any())
+                throw new ArgumentException("No data provided for volatility visualization");
+
+            var filtered = data.Where(d => d.Symbol == symbol).OrderBy(d => d.Timestamp).ToList();
+            if (!filtered.Any())
+                throw new ArgumentException($"No data for symbol {symbol}");
+
+            var xs = filtered.Select(d => d.Timestamp.ToOADate()).ToArray();
+
+            var v7 = filtered.Select(d => (double)(d.Volatility7 ?? 0f)).ToArray();
+            var v14 = filtered.Select(d => (double)(d.Volatility14 ?? 0f)).ToArray();
+            var v21 = filtered.Select(d => (double)(d.Volatility21 ?? 0f)).ToArray();
+
+            var v7z = filtered.Select(d => (double)(d.Volatility7Z ?? 0f)).ToArray();
+            var v14z = filtered.Select(d => (double)(d.Volatility14Z ?? 0f)).ToArray();
+            var v21z = filtered.Select(d => (double)(d.Volatility21Z ?? 0f)).ToArray();
+
+            var plt = new Plot(1000, 600);
+
+            // Raw volatility lines
+            plt.AddScatter(xs, v7, System.Drawing.Color.Blue, label: "Volatility7");
+            plt.AddScatter(xs, v14, System.Drawing.Color.Green, label: "Volatility14");
+            plt.AddScatter(xs, v21, System.Drawing.Color.Orange, label: "Volatility21");
+
+            // Z-score lines as dashed
+            var s1 = plt.AddScatter(xs, v7z, System.Drawing.Color.LightBlue, label: "Volatility7Z"); s1.LineStyle = ScottPlot.LineStyle.Dash;
+            var s2 = plt.AddScatter(xs, v14z, System.Drawing.Color.LightGreen, label: "Volatility14Z"); s2.LineStyle = ScottPlot.LineStyle.Dash;
+            var s3 = plt.AddScatter(xs, v21z, System.Drawing.Color.Khaki, label: "Volatility21Z"); s3.LineStyle = ScottPlot.LineStyle.Dash;
+
+            plt.Title($"{symbol} Volatility (7/14/21) and Z-scores");
+            plt.YLabel("Volatility");
+            plt.XLabel("Date");
+            plt.Legend();
+            plt.SetAxisLimits(xMin: xs.FirstOrDefault(), xMax: xs.LastOrDefault());
+
+            // Format X axis as dates if possible
+            try { plt.XAxis.DateTimeFormat(true); } catch { }
+
+            plt.SaveFig(outputPath);
+            Console.WriteLine($"Volatility chart created at: {Path.GetFullPath(outputPath)}");
+        }
+
+        public static void CreateVolatilityIndexChart(List<(DateTime Timestamp, double Index)> series, string symbol, string outputPath = "volatility_index.png")
+        {
+            if (series == null || !series.Any())
+                throw new ArgumentException("No data provided for volatility index visualization");
+
+            var xs = series.Select(s => s.Timestamp.ToOADate()).ToArray();
+            var ys = series.Select(s => s.Index).ToArray();
+
+            var plt = new Plot(1000, 400);
+            plt.AddScatter(xs, ys, System.Drawing.Color.Purple, label: "VolatilityIndex");
+
+            // Add threshold lines at 33 and 66
+            plt.AddHorizontalLine(33, System.Drawing.Color.DarkGray);
+            plt.AddHorizontalLine(66, System.Drawing.Color.DarkGray);
+
+            plt.Title($"{symbol} Volatility Index");
+            plt.XLabel("Date");
+            plt.YLabel("Index (0-100)");
+            plt.SetAxisLimits(yMin: 0, yMax: 100, xMin: xs.FirstOrDefault(), xMax: xs.LastOrDefault());
+            try { plt.XAxis.DateTimeFormat(true); } catch { }
+            plt.Legend();
+
+            plt.SaveFig(outputPath);
+            Console.WriteLine($"Volatility index chart created at: {Path.GetFullPath(outputPath)}");
+        }
     }
 }
