@@ -31,7 +31,7 @@ namespace CryptoPredictor
             Console.WriteLine($"Price chart created at: {Path.GetFullPath(outputPath)}");
         }
 
-        public static void CreatePredictionVsActualChart(List<ResidualData> residuals, string outputPath = "prediction_vs_actual.png")
+        public static void CreatePredictionVsActualChart(List<ResidualData> residuals, string symbol, string outputPath = "prediction_vs_actual.png")
         {
             if (residuals == null || !residuals.Any())
                 throw new ArgumentException("No residual data provided for visualization");
@@ -50,7 +50,7 @@ namespace CryptoPredictor
             double max = Math.Max(residuals.Max(r => r.Price), residuals.Max(r => r.PredictedPrice));
             plot.AddLine(min, min, max, max, System.Drawing.Color.Red, 1);
 
-            plot.Title("Predicted vs Actual Prices");
+            plot.Title($"{symbol} Predicted vs Actual Prices");
             plot.XLabel("Actual Price");
             plot.YLabel("Predicted Price");
             plot.SaveFig(outputPath);
@@ -111,16 +111,29 @@ namespace CryptoPredictor
             var ys = series.Select(s => s.Index).ToArray();
 
             var plt = new Plot(1000, 400);
-            plt.AddScatter(xs, ys, System.Drawing.Color.Purple, label: "VolatilityIndex");
+            var scatter = plt.AddScatter(xs, ys, System.Drawing.Color.Purple, label: "Volatility Index");
+            scatter.MarkerSize = 4;
+            scatter.LineWidth = 2;
 
             // Add threshold lines at 33 and 66
             plt.AddHorizontalLine(33, System.Drawing.Color.DarkGray);
             plt.AddHorizontalLine(66, System.Drawing.Color.DarkGray);
 
+            double minY = ys.Min();
+            double maxY = ys.Max();
+            double range = Math.Max(5, maxY - minY);
+            double margin = range * 0.15;
+            double yMin = Math.Max(0, minY - margin);
+            double yMax = Math.Min(100, maxY + margin);
+            if (yMax - yMin < 10)
+            {
+                yMax = Math.Min(100, yMin + 10);
+            }
+
             plt.Title($"{symbol} Volatility Index");
             plt.XLabel("Date");
             plt.YLabel("Index (0-100)");
-            plt.SetAxisLimits(yMin: 0, yMax: 100, xMin: xs.FirstOrDefault(), xMax: xs.LastOrDefault());
+            plt.SetAxisLimits(yMin: yMin, yMax: yMax, xMin: xs.FirstOrDefault(), xMax: xs.LastOrDefault());
             try { plt.XAxis.DateTimeFormat(true); } catch { }
             plt.Legend();
 

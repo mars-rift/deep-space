@@ -23,6 +23,9 @@ namespace CryptoPredictor
         private const string DEFAULT_SYMBOL = "ETH";
         private const string DEFAULT_COINGECKO_ID = "ethereum";
         private const string DEFAULT_BINANCE_SYMBOL = "ETHUSDT";
+        private const string BITCOIN_SYMBOL = "BTC";
+        private const string BITCOIN_COINGECKO_ID = "bitcoin";
+        private const string BITCOIN_BINANCE_SYMBOL = "BTCUSDT";
         private static bool OfflineMode =>
             string.Equals(Environment.GetEnvironmentVariable("DEEP_OFFLINE"), "1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(Environment.GetEnvironmentVariable("DEEP_OFFLINE"), "true", StringComparison.OrdinalIgnoreCase);
@@ -32,6 +35,38 @@ namespace CryptoPredictor
             string symbol = DEFAULT_SYMBOL;
             string coinGeckoId = DEFAULT_COINGECKO_ID;
             string binanceSymbol = DEFAULT_BINANCE_SYMBOL;
+            string assetName = GetAssetName(symbol);
+
+            var assetArg = ParseAssetArgument(args);
+            if (!string.IsNullOrEmpty(assetArg))
+            {
+                if (string.Equals(assetArg, "btc", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(assetArg, "bitcoin", StringComparison.OrdinalIgnoreCase))
+                {
+                    symbol = BITCOIN_SYMBOL;
+                    assetName = GetAssetName(symbol);
+                    coinGeckoId = BITCOIN_COINGECKO_ID;
+                    binanceSymbol = BITCOIN_BINANCE_SYMBOL;
+                }
+            }
+            else
+            {
+                Console.WriteLine("Choose asset to analyze:");
+                Console.WriteLine("  1) Ethereum (default)");
+                Console.WriteLine("  2) Bitcoin");
+                Console.Write("Enter selection [1/2]: ");
+                var choice = Console.ReadLine()?.Trim();
+
+                if (string.Equals(choice, "2", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(choice, "bitcoin", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(choice, "btc", StringComparison.OrdinalIgnoreCase))
+                {
+                    symbol = BITCOIN_SYMBOL;
+                    assetName = GetAssetName(symbol);
+                    coinGeckoId = BITCOIN_COINGECKO_ID;
+                    binanceSymbol = BITCOIN_BINANCE_SYMBOL;
+                }
+            }
 
             try
             {
@@ -42,18 +77,18 @@ namespace CryptoPredictor
                 Console.WriteLine("=== Crypto Price Predictor ===");
 
                 // Load and prepare regular data from CoinGecko
-                Console.WriteLine($"Loading basic price data for {symbol}...");
-                var cryptoData = await LoadDataAsync(coinGeckoId, binanceSymbol);
+                Console.WriteLine($"Loading basic price data for {assetName}...");
+                var cryptoData = await LoadDataAsync(coinGeckoId, binanceSymbol, symbol);
                 if (cryptoData?.Any() != true)
                 {
-                    Console.WriteLine("Error: No data found from Binance API.");
+                    Console.WriteLine("Error: No data found for the selected asset.");
                     return;
                 }
                 
 
                 // Load time series data
-                Console.WriteLine($"Loading time series data for {symbol}...");
-                var timeSeriesData = await LoadTimeSeriesDataAsync(coinGeckoId, binanceSymbol);
+                Console.WriteLine($"Loading time series data for {assetName}...");
+                var timeSeriesData = await LoadTimeSeriesDataAsync(coinGeckoId, binanceSymbol, symbol);
                 if (timeSeriesData?.Any() == true)
                 {
                     Console.WriteLine($"Loaded {timeSeriesData.Count} bars. Range: {timeSeriesData.Min(x=>x.Timestamp):u} to {timeSeriesData.Max(x=>x.Timestamp):u}");
@@ -93,9 +128,8 @@ namespace CryptoPredictor
                     // Create visualizations for the first symbol in the dataset
                     if (enrichedData.Any())
                     {
-                        var firstSymbol = enrichedData.First().Symbol;
-                        Console.WriteLine($"Creating time series visualization for {firstSymbol}...");
-                        CreateTimeSeriesVisualization(enrichedData, firstSymbol);
+                        Console.WriteLine($"Creating time series visualization for {assetName}...");
+                        CreateTimeSeriesVisualization(enrichedData, symbol);
                     }
 
                     // Generate residuals for visualization
@@ -111,6 +145,7 @@ namespace CryptoPredictor
                         Console.WriteLine("Creating prediction vs actual visualization...");
                         Visualization.CreatePredictionVsActualChart(
                             residuals,
+                            symbol,
                             predictionVsActualPath
                         );
 
@@ -140,7 +175,7 @@ namespace CryptoPredictor
                         Volatility21Z = latestIndicators.Volatility21Z ?? 0f
                     });
 
-                    Console.WriteLine($"Predicted Best Price to Buy ETH: {prediction.PredictedPrice:C2}");
+                    Console.WriteLine($"Predicted Best Price to Buy {symbol}: {prediction.PredictedPrice:C2}");
                 }
             }
             catch (Exception ex)
@@ -153,7 +188,7 @@ namespace CryptoPredictor
             }
         }
 
-        private static async Task<List<CryptoData>> LoadDataAsync(string coinGeckoId, string binanceSymbol)
+        private static async Task<List<CryptoData>> LoadDataAsync(string coinGeckoId, string binanceSymbol, string selectedSymbol)
         {
             try
             {
@@ -163,6 +198,7 @@ namespace CryptoPredictor
                     var coinGeckoData = await coinGeckoDataFetcher.GetPricesAsync(coinGeckoId, 365);
                     if (coinGeckoData?.Any() == true)
                     {
+                        NormalizeSymbols(coinGeckoData, selectedSymbol);
                         Console.WriteLine("Successfully loaded data from CoinGecko!");
                         Console.WriteLine($"Loaded {coinGeckoData.Count} price records from CoinGecko");
                         return CleanCryptoData(coinGeckoData);
@@ -173,6 +209,7 @@ namespace CryptoPredictor
                     var data = await binanceDataFetcher.GetPricesAsync(binanceSymbol, 365);
                     if (data?.Any() == true)
                     {
+                        NormalizeSymbols(data, selectedSymbol);
                         Console.WriteLine("Successfully loaded data from Binance!");
                         Console.WriteLine($"Loaded {data.Count} price records from Binance");
                         return CleanCryptoData(data);
@@ -181,6 +218,7 @@ namespace CryptoPredictor
 
                 Console.WriteLine("Both online APIs failed, falling back to CSV data...");
                 var csvData = LoadData();
+                csvData = csvData.Where(d => string.Equals(d.Symbol, selectedSymbol, StringComparison.OrdinalIgnoreCase)).ToList();
                 Console.WriteLine($"Loaded {csvData.Count} price records from CSV");
                 return CleanCryptoData(csvData);
             }
@@ -215,7 +253,12 @@ namespace CryptoPredictor
                 using var reader = new StreamReader(CSV_FILE_PATH);
                 using var csv = new CsvReader(reader, config);
                 csv.Context.RegisterClassMap<CryptoDataMap>();
-                return csv.GetRecords<CryptoData>().ToList();
+                var records = csv.GetRecords<CryptoData>().ToList();
+                foreach (var record in records)
+                {
+                    record.Symbol = NormalizeSymbolName(record.Symbol);
+                }
+                return records;
             }
             catch (Exception ex)
             {
@@ -224,7 +267,7 @@ namespace CryptoPredictor
             }
         }
 
-        private static async Task<List<CryptoTimeSeriesData>> LoadTimeSeriesDataAsync(string coinGeckoId, string binanceSymbol)
+        private static async Task<List<CryptoTimeSeriesData>> LoadTimeSeriesDataAsync(string coinGeckoId, string binanceSymbol, string selectedSymbol)
         {
             try
             {
@@ -235,6 +278,7 @@ namespace CryptoPredictor
                     var data = await binanceDataFetcher.GetOHLCVAsync(binanceSymbol, "1d", 365);
                     if (data?.Any() == true)
                     {
+                        NormalizeSymbols(data, selectedSymbol);
                         Console.WriteLine("Successfully loaded time series data from Binance!");
                         Console.WriteLine($"Loaded {data.Count} time series records from Binance");
                         return data;
@@ -246,6 +290,7 @@ namespace CryptoPredictor
                     var coinGeckoData = await coinGeckoDataFetcher.GetOHLCVAsync(coinGeckoId, 365);
                     if (coinGeckoData?.Any() == true)
                     {
+                        NormalizeSymbols(coinGeckoData, selectedSymbol);
                         Console.WriteLine("Successfully loaded time series data from CoinGecko!");
                         Console.WriteLine($"Loaded {coinGeckoData.Count} time series records from CoinGecko");
                         return coinGeckoData;
@@ -255,6 +300,7 @@ namespace CryptoPredictor
                 // If both fail, fall back to CSV
                 Console.WriteLine("Both online APIs failed, falling back to CSV time series data...");
                 var csvData = LoadTimeSeriesData();
+                csvData = csvData.Where(d => string.Equals(d.Symbol, selectedSymbol, StringComparison.OrdinalIgnoreCase)).ToList();
                 Console.WriteLine($"Loaded {csvData.Count} time series records from CSV");
                 return csvData;
             }
@@ -293,7 +339,12 @@ namespace CryptoPredictor
                 // Register class mapping for time series data
                 csv.Context.RegisterClassMap<CryptoTimeSeriesDataMap>();
 
-                return csv.GetRecords<CryptoTimeSeriesData>().ToList();
+                var records = csv.GetRecords<CryptoTimeSeriesData>().ToList();
+                foreach (var record in records)
+                {
+                    record.Symbol = NormalizeSymbolName(record.Symbol);
+                }
+                return records;
             }
             catch (Exception ex)
             {
@@ -647,7 +698,6 @@ namespace CryptoPredictor
                 var rows = g.OrderBy(d => d.Timestamp).ToList();
 
                 var scores = new List<double>();
-                var tsPairs = new List<(DateTime Timestamp, double Index)>();
                 foreach (var r in rows)
                 {
                     var v7 = r.Volatility7 ?? 0f;
@@ -655,28 +705,95 @@ namespace CryptoPredictor
                     var v21 = r.Volatility21 ?? 0f;
                     var score = weights[0] * v7 + weights[1] * v14 + weights[2] * v21;
                     scores.Add(score);
-                    tsPairs.Add((r.Timestamp, score));
                 }
 
                 if (!scores.Any()) continue;
 
+                var sorted = scores.OrderBy(s => s).ToList();
+                var tsPairs = new List<(DateTime Timestamp, double Index)>();
+
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    var score = scores[i];
+                    int less = sorted.TakeWhile(s => s < score).Count();
+                    int equal = sorted.Count(s => s == score);
+                    double percentile = (less + 0.5 * equal) / sorted.Count;
+                    tsPairs.Add((rows[i].Timestamp, percentile * 100.0));
+                }
+
                 // Compute percentile of latest score
                 var latestScore = scores.Last();
-                var sorted = scores.OrderBy(s => s).ToList();
-                int less = sorted.TakeWhile(s => s < latestScore).Count();
-                int equal = sorted.Count(s => s == latestScore);
-                // percentile with averaging ties
-                double percentile = (less + 0.5 * equal) / sorted.Count;
-                double index = percentile * 100.0;
+                int latestLess = sorted.TakeWhile(s => s < latestScore).Count();
+                int latestEqual = sorted.Count(s => s == latestScore);
+                double latestPercentile = (latestLess + 0.5 * latestEqual) / sorted.Count;
+                double latestIndex = latestPercentile * 100.0;
 
-                string band = index < 33 ? "Low" : (index < 66 ? "Medium" : "High");
+                string band = latestIndex < 33 ? "Low" : (latestIndex < 66 ? "Medium" : "High");
 
-                Console.WriteLine($"Volatility Index for {symbol}: {index:F1} ({band}) — weighted score: {latestScore:F4}");
+                Console.WriteLine($"Volatility Index for {symbol}: {latestIndex:F1} ({band}) — weighted score: {latestScore:F4}");
 
                 seriesBySymbol[symbol] = tsPairs;
             }
 
             return seriesBySymbol;
+        }
+
+        private static string ParseAssetArgument(string[] args)
+        {
+            if (args == null || args.Length == 0)
+                return string.Empty;
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                var arg = args[i]?.Trim();
+                if (string.IsNullOrEmpty(arg))
+                    continue;
+
+                if (arg.Equals("-asset", StringComparison.OrdinalIgnoreCase)
+                    || arg.Equals("--asset", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length)
+                        return args[i + 1].Trim();
+                }
+
+                if (arg.StartsWith("-asset=", StringComparison.OrdinalIgnoreCase)
+                    || arg.StartsWith("--asset=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parts = arg.Split(new[] { '=' }, 2);
+                    if (parts.Length == 2)
+                        return parts[1].Trim();
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static void NormalizeSymbols(List<CryptoData> data, string symbol)
+        {
+            if (data == null || string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            foreach (var item in data)
+                item.Symbol = symbol;
+        }
+
+        private static void NormalizeSymbols(List<CryptoTimeSeriesData> data, string symbol)
+        {
+            if (data == null || string.IsNullOrWhiteSpace(symbol))
+                return;
+
+            foreach (var item in data)
+                item.Symbol = symbol;
+        }
+
+        private static string GetAssetName(string symbol)
+        {
+            return symbol?.ToUpperInvariant() switch
+            {
+                "BTC" => "Bitcoin",
+                "ETH" => "Ethereum",
+                _ => symbol ?? string.Empty,
+            };
         }
 
         private static void PlotResiduals(IDataView predictions)
@@ -938,12 +1055,36 @@ namespace CryptoPredictor
             {
                 HasHeaderRecord = true
             };
+
+            var mergedData = new List<CryptoData>();
+            if (File.Exists(path))
+            {
+                try
+                {
+                    using var reader = new StreamReader(path);
+                    using var csvReader = new CsvReader(reader, config);
+                    csvReader.Context.RegisterClassMap<CryptoDataMap>();
+                    mergedData = csvReader.GetRecords<CryptoData>().ToList();
+                }
+                catch
+                {
+                    mergedData = new List<CryptoData>();
+                }
+            }
+
+            mergedData.AddRange(data);
+            var distinctRows = mergedData
+                .Where(row => !string.IsNullOrWhiteSpace(row.Symbol))
+                .Select(row => new CryptoData { Symbol = NormalizeSymbolName(row.Symbol), Price = row.Price })
+                .DistinctBy(row => (row.Symbol, row.Price))
+                .ToList();
+
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
             using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
             using var csv = new CsvWriter(writer, config);
             csv.WriteHeader<CryptoData>();
             csv.NextRecord();
-            foreach (var row in data)
+            foreach (var row in distinctRows)
             {
                 csv.WriteRecord(row);
                 csv.NextRecord();
@@ -956,12 +1097,43 @@ namespace CryptoPredictor
             {
                 HasHeaderRecord = true
             };
+
+            var mergedData = new Dictionary<(string Symbol, DateTime Timestamp), CryptoTimeSeriesData>();
+            if (File.Exists(path))
+            {
+                try
+                {
+                    using var reader = new StreamReader(path);
+                    using var csvReader = new CsvReader(reader, config);
+                    csvReader.Context.RegisterClassMap<CryptoTimeSeriesDataMap>();
+                    foreach (var record in csvReader.GetRecords<CryptoTimeSeriesData>())
+                    {
+                        var normalizedSymbol = NormalizeSymbolName(record.Symbol);
+                        var key = (normalizedSymbol, record.Timestamp);
+                        record.Symbol = normalizedSymbol;
+                        mergedData[key] = record;
+                    }
+                }
+                catch
+                {
+                    mergedData.Clear();
+                }
+            }
+
+            foreach (var item in data)
+            {
+                var normalizedSymbol = NormalizeSymbolName(item.Symbol);
+                var key = (normalizedSymbol, item.Timestamp);
+                item.Symbol = normalizedSymbol;
+                mergedData[key] = item;
+            }
+
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
             using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
             using var csv = new CsvWriter(writer, config);
             csv.WriteField("symbol"); csv.WriteField("timestamp"); csv.WriteField("open"); csv.WriteField("high"); csv.WriteField("low"); csv.WriteField("close"); csv.WriteField("volume");
             csv.NextRecord();
-            foreach (var r in data.OrderBy(d => d.Timestamp))
+            foreach (var r in mergedData.Values.OrderBy(r => r.Symbol).ThenBy(r => r.Timestamp))
             {
                 csv.WriteField(r.Symbol);
                 csv.WriteField(r.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
@@ -1007,6 +1179,25 @@ namespace CryptoPredictor
             using var fs = File.OpenRead(path);
             var hash = sha.ComputeHash(fs);
             return string.Concat(hash.Select(b => b.ToString("x2")));
+        }
+
+        private static string NormalizeSymbolName(string symbol)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+                return string.Empty;
+
+            switch (symbol.Trim().ToUpperInvariant())
+            {
+                case "ETHEREUM":
+                case "ETH":
+                    return "ETH";
+                case "BITCOIN":
+                case "BTC":
+                case "XBT":
+                    return "BTC";
+                default:
+                    return symbol.Trim().ToUpperInvariant();
+            }
         }
 
         private static List<CryptoData> CleanCryptoData(List<CryptoData> data)
