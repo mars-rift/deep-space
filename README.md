@@ -44,7 +44,13 @@ A machine learning-based cryptocurrency prediction tool that utilizes real-time 
  dotnet run -c Release -asset btc
  ```
 
- This will update `crypto.csv` and `crypto_timeseries.csv` with BTC values so subsequent offline runs can use Bitcoin data.
+ To explicitly run the app for Ethereum, use:
+
+ ```
+ dotnet run -c Release -asset eth
+ ```
+
+ This will update `crypto.csv` and `crypto_timeseries.csv` with values for the selected asset so subsequent offline runs can use that data.
 
  Outputs are written to the `output/` directory with timestamped filenames.
 ```bash

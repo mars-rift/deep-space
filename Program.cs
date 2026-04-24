@@ -48,6 +48,20 @@ namespace CryptoPredictor
                     coinGeckoId = BITCOIN_COINGECKO_ID;
                     binanceSymbol = BITCOIN_BINANCE_SYMBOL;
                 }
+                else if (string.Equals(assetArg, "eth", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(assetArg, "ethereum", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Explicit Ethereum selection uses defaults.
+                    symbol = DEFAULT_SYMBOL;
+                    assetName = GetAssetName(symbol);
+                    coinGeckoId = DEFAULT_COINGECKO_ID;
+                    binanceSymbol = DEFAULT_BINANCE_SYMBOL;
+                }
+                else
+                {
+                    Console.WriteLine($"Unrecognized asset '{assetArg}'. Supported values: eth, ethereum, btc, bitcoin.");
+                    return;
+                }
             }
             else
             {
